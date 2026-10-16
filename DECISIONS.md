@@ -1,74 +1,50 @@
-# ARCHITECTURAL DECISION RECORDS (`DECISIONS.md`)
+# Architectural Decision Records (`DECISIONS.md`)
 
-Maintained by: 👤 `[Lead Architect Node]`
+This document records the core technical decisions, root-cause failure analyses, biomechanical and signal invariants, and verification gates for SteadyGate.
 
 ---
 
-## ADR-001: Coexistence of Legacy TypeScript App and SteadyGate 2.0 Python Package
-* **Context:** Repository commit `5cdf58c` contained a Next.js/TypeScript web prototype (`src/`, `tests/gesture-robustness.test.ts`), while the SteadyGate 2.0 Production Engine requires a Python 3.10+ modular architecture (`steadygate`), `config.yaml`, OpenCV ArUco (`cv2.aruco`), MediaPipe Tasks, and `pytest` verification.
-* **Decision:** Preserve all existing TypeScript files and tests (`npx tsx tests/gesture-robustness.test.ts`) while implementing the complete SteadyGate 2.0 Python production engine inside `steadygate/`.
+## ADR-001: Unified Next.js / TypeScript Runtime (`src/*`) & Optional Python Hardware Harness (`steadygate/*`)
+* **Context:** SteadyGate's live perception, tremor filtering, intent gating, Admin AI Trainer, and smart-home Digital Twin run in Next.js and TypeScript (`src/lib/hand-gesture-engine.ts`, `src/lib/vision-runtime.ts`, `src/lib/signal-processing.ts`, `src/components/LiveCameraStream.tsx`, `src/app/api/admin-train/route.ts`) with zero external cloud dependencies. A separate Python package (`steadygate/*`) provides offline ArUco spatial anchor testing, physical relay/serial actuation hooks, and deterministic CLI chaos evaluation.
+* **Decision:** Keep the primary web runtime 100% unified in TypeScript (Modules 1–4) so browser-based camera inference, CLAHE pre-processing, tremor personalization, and PGlite persistence execute in a single process without requiring a Python microservice. Retain `steadygate/*` strictly as an optional offline evaluation and physical IoT relay test suite.
 
-## ADR-002: Strict 18-Member `ReasonCode` Enum Across All `DecisionEvent` Records
-* **Context:** SteadyGate 2.0 requires 18 exact `ReasonCode` values (`NO_HAND`, `OUTSIDE_ZONE`, `LOW_SCORE`, `UNKNOWN_GESTURE`, `STALE_OBSERVATION`, `TIMESTAMP_GAP`, `HOLD_TOO_SHORT`, `NOT_RELEASED`, `TARGET_CHANGED`, `TIMEOUT`, `USER_CANCEL`, `HEALTH_STRICT`, `HEALTH_LOCKED`, `AMBIGUOUS_TARGET`, `ACK_MISSING`, `OUTCOME_UNKNOWN`, `USER_DISTRACTED`, `DEVICE_FAULT_LOCK`) and a 1-to-1 Recovery Engine map.
-* **Decision:** Validate `DecisionEvent.reason_code` against `ReasonCode` on every frame and map `DEVICE_FAULT_LOCK` to `"Action blocked: Target appliance reporting component degradation."`
+---
 
-## ADR-003: ArUco Spatial Anchor Locking (`cv2.aruco`) & Duplicate Appliance Addressing
-* **Context:** Casual background hand movements can cause false triggers, and duplicate appliances (e.g., Light Bulb 1 vs. Light Bulb 2) require spatial disambiguation.
-* **Decision:** Implement `steadygate/aruco_anchor.py` (`ArucoSpatialAnchorTracker`) using `cv2.aruco.DICT_4X4_50`. Map every appliance in `config.yaml` to a unique ArUco Marker ID (`lamp`: `10`, `lamp_2`: `11`, `fan`: `20`, `curtain`: `30`, `heater`: `40`). Forbid processing a gesture when ArUco spatial locking is active unless the user's hand bounding box/pointing ray intersects the targeted ArUco marker anchor box.
+## ADR-002: HaGRID 17,213-Sample Biomechanical Calibration & Foreshortening Invariance
+* **Root Cause:** Standard 2D Euclidean wrist-to-tip distances break when the hand tilts toward the camera ($y \times 0.6$ foreshortening) or turns sideways (e.g., `like` / `THUMBS_UP` where curled fingers project sideways and appear extended in 2D).
+* **Biomechanical Invariant:** Calibrated against $N = 17,213$ real human MediaPipe 21-landmark samples across 10 classes from HaGRID (`Raoina/Hand-Gesture-Classification`):
+  - **Tip-Over-PIP Radial Ratio:** Curled fingers satisfy $\text{dist}(0, \text{tip}) / \text{dist}(0, \text{pip}) \in [0.42, 0.92]$, whereas extended fingers satisfy $[1.28, 1.45]$ regardless of 2D foreshortening.
+  - **Palm-Scale Normalization:** Normalize reach against $\text{baseScale} = \max(L_{\text{palm}}, 0.85 \cdot W_{\text{palm}})$ and damp `fingerExt` whenever $\text{dist}(0, \text{tip}) / \text{dist}(0, \text{pip}) < 1.16$ or $\text{dist}(\text{mcp}, \text{tip}) / \text{dist}(\text{mcp}, \text{pip}) < 1.25$.
+  - **Thumb-to-MCP Abduction (`d4_9`, `d4_13`):** Separates `VICTORY` ($d_{4,9} \le 0.38$) from `THREE_FINGERS` (`three2`, $d_{4,9} \ge 0.91$) and `FIST` ($d_{4,9} \le 0.57$) from `THUMBS_UP` ($d_{4,9} \ge 0.98$) with zero $p_{10}\text{–}p_{90}$ overlap.
+  - **Direction-Aware Prototype Boosting:** When applying online prototypes in `activeAdminModel.gesturePrototypes`, enforce vertical thumb polarity (`thDy >= -0.05 && wristDy >= 0.0` for `THUMBS_UP` vs. `THUMBS_DOWN`) so identical 5-finger flexion centroids never collide and collapse top-2 classification margin.
 
-## ADR-004: Face/Gaze Intent Match (`USER_DISTRACTED`)
-* **Context:** Users talking with their hands or looking away from the target appliance must not trigger commands.
-* **Decision:** Implement `steadygate/face_intent.py` (`FaceIntentTracker`). Require `user_intent_verified: True` (eye gaze vector intersecting the targeted ArUco/appliance bounding box AND head yaw/pitch within `+/- 20.0` degrees of the camera plane) to transition from `HOLD` to execution. Flag non-compliant frames as `UNINTENTIONAL`, abort prediction immediately, and emit `ReasonCode.USER_DISTRACTED`.
+---
 
-## ADR-005: Ampere-Load Dynamic Hand Gesture Timing Matrix
-* **Context:** Low-ampere appliances (lamps, curtains) benefit from snappy response times (`0.35s`), whereas high-ampere inductive/resistive loads (fans, heaters) require longer deliberation (`1.20s–1.80s`) scaled by hand tremor.
-* **Decision:** Define `ampere_load_matrix` in `config.yaml` (`LOW_AMPERE`: `0.35s` baseline; `MEDIUM_AMPERE`: `1.20s`; `HIGH_AMPERE`: `1.80s`) and compute dynamic hold requirements via:
-  $$\text{hold\_required} = \text{load\_ampere\_class\_baseline} \times (1.0 + \text{tremor\_coefficient})$$
+## ADR-003: Three Real-World Live Camera Failure Case Guards (`detectObjectGrasp`)
+* **Root-Cause Failure Analysis:**
+  1. **Case 1 (`Screenshot 2026-10-16 114707.png` — Smartphone in Hand $\rightarrow$ `POINTING_UP`):** Holding a smartphone vertically with the index finger extended along the top edge (`idx = 0.881`) while the thumb clamps the left edge and middle/ring/pinky hook around the right edge bypassed object-grasp guards that required `fourMax < 0.62`.
+  2. **Case 2 (`Screenshot 2026-10-16 114648.png` — Empty Side-Profile Hand $\rightarrow$ `PALM_OCCLUDED_BY_OBJECT`):** Viewing a free, open hand in 3D radial profile aligns the 4 MCP joints (`5, 9, 13, 17`) along the optical axis (`aspect = 4.79 > 3.6`), falsely triggering Guard 1 (`PALM_OCCLUDED_BY_OBJECT`) despite all 4 fingers being unoccluded and extended (`fourMin = 0.829`, `palmLen = 0.299`).
+  3. **Case 3 (`Screenshot 2026-10-16 121013.png` — Nose Tingling / Face Scratching $\rightarrow$ `FIST`):** Touching/scratching the nose places the index and middle MCP knuckles (`5, 9`) at the nose bridge with an acute MCP fold (`mIdx = 8.8°`, `mMid = 13.3°` $< 45^\circ$) while straight PIP segments (`177.6°`, `165.2°`) hang downward toward the wrist, producing low radial reach (`fourMean = 0.058`) that Rule 7 misclassified as `FIST`.
+* **Biomechanical & Vision Invariants:**
+  1. **Guard 6 (`WIDE_PHONE_OR_OBJECT_CLASP`):** Block whenever thumb tip (`4`) opposes the index/middle/ring knuckle line across a wide object body (`idx >= 0.50 && Math.max(mid, rng, pnk) < 0.45 && d4_5 > 0.72 && d4_10 > 1.10 && d4_14 > 1.10`). Across all $1,263$ real HaGRID `POINTING_UP` samples, $\max(d_{4,5}) = 0.55$.
+  2. **Side-Profile Free-Hand Exemption (`isNaturalSideProfileFreeHand`):** Exempt natural 3D radial side-profile hands (`3.6 < aspect <= 6.2 && palmLen >= 0.22 && fourMin >= 0.70 && Math.abs(landmarks[9].x - wrist.x) / palmLen >= 0.28`) from Guard 1 and Guard 3 so they classify cleanly as `OPEN_PALM`.
+  3. **Guard 7 (`CASUAL_FACE_TOUCH_OR_SCRATCH`) + Face/Nose ROI Overlap Guard:** Reject postures with acute MCP fold and straight downward-hanging PIP segments (`thumb < 0.48 && d4_9 < 0.68 && Math.min(mIdx, mMid) < 45 && Math.max(sIdx, sMid) > 0.65 && fourMean < 0.35`) OR live camera YCbCr skin-cluster overlap above elevated knuckles (`SceneAnalyzer.detectFaceNoseOverlap`).
 
-## ADR-006: Continuous ML Training Pipeline & Privacy-By-Default Pixel Stripping
-* **Context:** Runtime telemetry is needed to train a lightweight gesture model without ever storing raw camera pixels.
-* **Decision:** Append `ml_training_payload` inside every step's `DecisionEvent` written to `logs/session_<timestamp>.jsonl`, capturing landmarks, confidence, frame ID, timestamp, lux/brightness, contrast, background entropy, user ID, and tremor coefficient, while `sanitize_frame_for_ml_storage()` enforces `raw_video_pixels_masked: True` and `pixel_array_stored: False`.
+---
 
-## ADR-007: Actuator Health Circuit Breaker (`DEVICE_FAULT_LOCK`) & Tri-State Twin Telemetry
-* **Context:** Sending `SET` commands to a degraded appliance is unsafe, and showing `"SUCCESS"` when a command was merely sent hides ACK drops or corrupt outcomes.
-* **Decision:** Query the target appliance status register (`check_circuit_breaker`) prior to every `SET` command. If `DEFECTIVE`, freeze the loop, emit `DecisionType.CANCEL` with `ReasonCode.DEVICE_FAULT_LOCK`, withhold the physical packet, and alert the Feedforward Coach with `"Action blocked: Target appliance reporting component degradation."` Track `requested_state`, `applied_state`, and `simulated_observed_state` separately on every `VirtualDevice`, and enforce an auto-expiring `ON` timer (`120.0s`) on the `HIGH`-risk `heater`.
+## ADR-004: 60 Hz Render Loop vs. 30 Hz Webcam Synchronization & Immediate Voter Flush
+* **Root Cause:** Browser `requestAnimationFrame` runs at $60\text{ Hz}$ while webcams update `video.currentTime` at $30\text{ Hz}$. Leaving `normLandmarks = null` on intermediate ticks where `video.currentTime === r.lastVideoTime` caused `intentRef.current.noHand()` and `voterRef.current.push("UNKNOWN")` to execute on every alternate frame. Additionally, `GestureVoter` hysteresis (`releaseRatio = 0.35`) allowed a prior gesture to remain committed for up to 5 frames after an object grasp began.
+* **Signal Invariant:** Cache `r.lastLandmarks` across intermediate $60\text{ Hz}$ ticks (`now - r.lastHandTs < 150 ms`) and immediately call `voterRef.current.reset()` whenever `classification.objectGraspAnalysis?.isObjectGrasp === true`.
 
-## [AD-2026-002] Multi-Agent Enterprise Workflow Matrix
-* **Status:** APPROVED
-* **Context:** The user requires a standalone, production-grade instructions file (`TEAM_WORK.md`) to establish high-performing, corporate-grade workspace operations across four simulated agent personas (`[Lead Architect]`, `[Implementation Eng]`, `[QA & Chaos Eng]`, `[Principal Reviewer]`) and the 15-Principal-Engineer Microsoft/Google Review Matrix.
-* **Decision:** Define a comprehensive, end-to-end framework enforcing standard software engineering patterns (Design Docs, CI/CD gates, chaos engineering, and zero-placeholder rule compliance).
-* **Impact:** Elevates the agent execution model to an institutional engineering standard, eliminating technical debt and ensuring absolute execution safety.
+---
 
-## [AD-2026-003] Three Real-World Live Camera Failure Case Guards & Concurrency Hardening
-* **Status:** APPROVED
-* **Context:** Live webcam testing exposed three concrete failure cases captured in user screenshots:
-  1. **Failure Case 1 (`Screenshot 2026-10-16 114707.png` — Smartphone in Hand -> `POINTING_UP`)**: Holding a wide smartphone vertically with the thumb clamping the left edge (`d4_5 = 1.02`, `d4_10 = 1.62`, `d4_14 = 1.75`, `cApertureRatio = 1.53`) and the index finger resting extended along the top edge (`idx = 0.88`) bypassed existing object-grasp guards (which assumed `fourMax < 0.62`) and falsely triggered `POINTING_UP`.
-  2. **Failure Case 2 (`Screenshot 2026-10-16 114648.png` — Side-Profile Free Hand -> `PALM_OCCLUDED_BY_OBJECT`)**: Holding an empty free hand in natural 3D radial side profile caused the 4 MCP joints (`5, 9, 13, 17`) to align along the camera axis (`aspect = 4.79 > 3.6`), falsely triggering Guard 1 (`PALM_OCCLUDED_BY_OBJECT`) despite all 4 fingers being cleanly extended (`fourMin = 0.83 >= 0.72`, `palmLen = 0.30 >= 0.22`) with natural radial profile curvature.
-  3. **Failure Case 3 (`Screenshot 2026-10-16 121013.png` — Nose Tingling / Face Scratching -> `FIST`)**: Touching/scratching the nose with knuckles near the nose bridge (`mIdx = 8.8°`, `mMid = 13.3°`, acute MCP fold back toward the wrist) and straight PIP segments (`sIdx = 177.6°`, `sMid = 165.2°`) hanging downward over the face produced low radial finger reach (`fourMean = 0.06`) and falsely triggered `FIST`.
-* **Decision:**
-  1. **Guard 6 (`WIDE_PHONE_OR_OBJECT_CLASP`)**: Block any posture where the thumb opposes the MCP/PIP knuckle line across a wide object span (`d4_5 > 0.72 && d4_10 > 1.10 && d4_14 > 1.10 && Math.max(mid, rng, pnk) < 0.45`), even when the index finger is extended along the top of the phone.
-  2. **Side-Profile Free-Hand Exemption in Guard 1**: Exempt natural 3D radial/ulnar side-profile free hands (`aspect > 3.6 && aspect <= 6.2 && palmLen >= 0.22 && fourMin >= 0.70 && Math.abs(landmarks[9].x - wrist.x) / palmLen >= 0.28`) from `PALM_OCCLUDED_BY_OBJECT` so sideways open hands are recognized cleanly without false object-grasp blocks.
-  3. **Guard 7 (`CASUAL_FACE_TOUCH_OR_SCRATCH`) + Live Face/Nose ROI Overlap Guard**:
-     - Biomechanically reject downward-hanging dorsal/claw face-scratching postures (`Math.min(mIdx, mMid) < 45 && Math.max(sIdx, sMid) > 0.65 && fourMean < 0.35`, OR `faceOverlapDetected === true`), returning `isObjectGrasp: true, reason: "CASUAL_FACE_TOUCH_OR_SCRATCH"` (forced to `UNKNOWN` with `0%` trigger).
-     - Add real-time Face/Nose ROI overlap detection in `SceneAnalyzer` (`src/lib/vision-runtime.ts`) and `LiveCameraStream.tsx` to detect when the hand bounding box overlaps the upper-central face/head skin cluster and block accidental face-touching commands.
+## ADR-005: Progressive 3-Stage Tremor Frequency ($f_0$) Personalizer & Spectral Notch Filter
+* **Signal Invariant:**
+  1. **Stage 1 (`INITIALIZED_60S_CALIB`):** Initialize $f_0$ from the user's 60-second enrolment baseline and hold fixed for `fixedHoldWindows = 4`.
+  2. **Stage 2 (`OBSERVING_CONFIRMATION`):** Extract sliding-window DFT spectrum across $0.8\text{–}15.0\text{ Hz}$. Reject non-human/erratic bursts whenever $\text{totalEnergy} > 0.012 \land (\text{IFR} > 0.52 \lor \text{SCR} < 0.25)$.
+  3. **Stage 3 (`FINALIZED_LOCKED`):** Lock $f_0$ once $\ge 8$ valid physiological windows ($3.0\text{–}12.0\text{ Hz}$) converge with $\sigma_{f_0} \le 0.48\text{ Hz}$, applying $92\%$ digital band-stop attenuation (`attenuationFactor = 0.08`) inside $f_0 \pm 1.0\text{ Hz}$ and $1.6\times$ penalty above $12.0\text{ Hz}$.
 
+---
 
-## [AD-2026-002] Multi-Agent Enterprise Workflow Matrix
-* **Status:** APPROVED
-* **Context:** The user requires a standalone, production-grade instructions file (`TEAM_WORK.md`) to establish high-performing, corporate-grade workspace operations across four simulated agent personas (`[Lead Architect]`, `[Implementation Eng]`, `[QA & Chaos Eng]`, `[Principal Reviewer]`).
-* **Decision:** Define a comprehensive, end-to-end framework enforcing standard software engineering patterns (Design Docs, CI/CD gates, chaos engineering, and zero-placeholder rule compliance).
-* **Impact:** Elevates the agent execution model to an institutional engineering standard, eliminating technical debt and ensuring absolute execution safety.
-
-## [AD-2026-003] Three Real-World Live Camera Failure Case Guards
-* **Status:** APPROVED
-* **Context:** Live webcam testing exposed three concrete failure cases captured in user screenshots:
-  1. **Failure Case 1 (`Screenshot 2026-10-16 114707.png` — Smartphone in Hand -> `POINTING_UP`)**: Holding a wide smartphone vertically with the thumb clamping the left edge (`d4_5 = 1.02`, `d4_10 = 1.62`, `d4_14 = 1.75`, `cApertureRatio = 1.53`) and the index finger resting extended along the top edge (`idx = 0.88`) bypassed existing object-grasp guards (which assumed `fourMax < 0.62`) and falsely triggered `POINTING_UP`.
-  2. **Failure Case 2 (`Screenshot 2026-10-16 114648.png` — Side-Profile Free Hand -> `PALM_OCCLUDED_BY_OBJECT`)**: Holding an empty free hand in natural 3D radial side profile caused the 4 MCP joints (`5, 9, 13, 17`) to align along the camera axis (`aspect = 4.79 > 3.6`), falsely triggering Guard 1 (`PALM_OCCLUDED_BY_OBJECT`) despite all 4 fingers being cleanly extended (`fourMin = 0.83 >= 0.72`, `palmLen = 0.30 >= 0.22`) with natural radial profile curvature.
-  3. **Failure Case 3 (`Screenshot 2026-10-16 121013.png` — Nose Tingling / Face Scratching -> `FIST`)**: Touching/scratching the nose with knuckles near the nose bridge (`mIdx = 8.8°`, `mMid = 13.3°`, acute MCP fold back toward the wrist) and straight PIP segments (`sIdx = 177.6°`, `sMid = 165.2°`) hanging downward over the face produced low radial finger reach (`fourMean = 0.06`) and falsely triggered `FIST`.
-* **Decision:**
-  1. **Guard 6 (`WIDE_PHONE_OR_OBJECT_CLASP`)**: Block any posture where the thumb opposes the MCP/PIP knuckle line across a wide object span (`d4_5 > 0.72 && d4_10 > 1.10 && d4_14 > 1.10 && Math.max(mid, rng, pnk) < 0.45`), even when the index finger is extended along the top of the phone.
-  2. **Side-Profile Free-Hand Exemption in Guard 1**: Exempt natural 3D radial/ulnar side-profile free hands (`aspect > 3.6 && aspect <= 6.2 && palmLen >= 0.22 && fourMin >= 0.70 && Math.abs(landmarks[9].x - wrist.x) / palmLen >= 0.28`) from `PALM_OCCLUDED_BY_OBJECT` so sideways open hands are recognized cleanly without false object-grasp blocks.
-  3. **Guard 7 (`CASUAL_FACE_TOUCH_OR_SCRATCH`) + Live Face/Nose ROI Overlap Guard**:
-     - Biomechanically reject downward-hanging dorsal/claw face-scratching postures (`Math.min(mIdx, mMid) < 45 && Math.max(sIdx, sMid) > 0.65 && fourMean < 0.35`, OR `faceOverlapDetected === true`), returning `isObjectGrasp: true, reason: "CASUAL_FACE_TOUCH_OR_SCRATCH"` (forced to `UNKNOWN` with `0%` trigger).
-     - Add real-time Face/Nose ROI overlap detection in `SceneAnalyzer` (`src/lib/vision-runtime.ts`) and `LiveCameraStream.tsx` to detect when the hand bounding box overlaps the upper-central face/head skin cluster and block accidental face-touching commands.
-
+## ADR-006: Atomic File Persistence & Privacy-By-Default Pixel Stripping
+* **Invariant:** Never persist raw camera pixel arrays (`raw_video_pixels_masked: true`). Persist Admin AI Trainer models (`storage/admin_trained_model.json`) and sample ledgers (`storage/admin_training_samples.json`) via POSIX atomic write-then-rename (`atomicWriteJsonSync`: write to `.tmp.<pid>.<ts>.<rand>` then `fs.renameSync`) to prevent partial-write corruption under concurrent requests.
