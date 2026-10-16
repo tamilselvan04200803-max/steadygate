@@ -23,8 +23,10 @@ import {
   generateObjectGraspLandmarks,
   REAL_WORLD_FAILURE_CASES,
   GESTURE_SMART_HOME_MAP,
+  setActiveAdminModel,
   type ObjectGraspAnalysis,
 } from "@/lib/hand-gesture-engine";
+import { setRuntimeAgentPatches } from "@/lib/learned-agent-rules";
 import {
   loadHandLandmarker,
   installMediaPipeConsoleGuard,
@@ -146,6 +148,8 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     | "CASE_1_PHONE_IN_HAND"
     | "CASE_2_FREE_HAND_SIDE_PROFILE"
     | "CASE_3_NOSE_TINGLING_SCRATCH"
+    | "CASE_4_BOOK_COVER_SIDE_CLAMP"
+    | "CASE_5_BOOK_SPINE_EDGE_HOLD"
   >("NONE");
   const [lightingStressMode, setLightingStressMode] = useState<
     "OPTIMAL" | "LOW_LIGHT_12_LUX" | "HARSH_BACKLIGHT_GLARE"
@@ -155,6 +159,21 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   const [personalizeNotice, setPersonalizeNotice] = useState<string | null>(null);
   const [localExpanded, setLocalExpanded] = useState(false);
   const [localeCountryCode, setLocaleCountryCode] = useState<string>("US");
+  const [cctvEngagementMode, setCctvEngagementMode] = useState<
+    "DIRECT_COMMAND" | "CCTV_WAKE_LOCK" | "STRICT_ZONE_GAZE"
+  >("DIRECT_COMMAND");
+  const [cctvWakeRemainingSec, setCctvWakeRemainingSec] = useState<number>(0);
+  const [agentBusy, setAgentBusy] = useState<boolean>(false);
+  const [agentPrompt, setAgentPrompt] = useState<string>("");
+  const [agentTargetGesture, setAgentTargetGesture] =
+    useState<RecognizedGesture>("OPEN_PALM");
+  const [agentReport, setAgentReport] = useState<{
+    message: string;
+    rootCauseDiagnosis: string;
+    codeSnippet: string;
+    targetFile: string;
+    totalPatches: number;
+  } | null>(null);
 
   const isExpanded = expandedView || localExpanded;
   const tremorTrackerRef = useRef(
@@ -221,12 +240,100 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   const cameraErrRef = useRef<string | null>(null);
   const modelStatusRef = useRef<ModelStatus>("IDLE");
   const preferDelegateRef = useRef<Delegate>("GPU");
+  const cctvWakeUnlockedUntilRef = useRef<number>(0);
+  const cctvWakeStreakRef = useRef<number>(0);
+  const cctvModeRef = useRef<"DIRECT_COMMAND" | "CCTV_WAKE_LOCK" | "STRICT_ZONE_GAZE">(
+    "DIRECT_COMMAND"
+  );
+
+  useEffect(() => {
+    cctvModeRef.current = cctvEngagementMode;
+  }, [cctvEngagementMode]);
 
   useEffect(() => {
     installMediaPipeConsoleGuard();
     sessionRef.current = makeSessionId();
     errorsRef.current.attach();
+    fetch("/api/ai-agent")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.success && Array.isArray(data.patches)) {
+          setRuntimeAgentPatches(data.patches);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const handleRunInAppAiAgent = async (
+    mode: "BLOCK_OBJECT_HOLD" | "FORCE_GESTURE" | "PROMPT"
+  ) => {
+    setAgentBusy(true);
+    try {
+      const liveLm = rt.current.lastLandmarks;
+      const patchAction =
+        mode === "BLOCK_OBJECT_HOLD"
+          ? "BLOCK_OBJECT_HOLD"
+          : mode === "FORCE_GESTURE"
+          ? "FORCE_GESTURE"
+          : undefined;
+      const res = await fetch("/api/ai-agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "auto_fix_frame",
+          patchAction,
+          targetGesture: agentTargetGesture,
+          userPrompt:
+            mode === "PROMPT"
+              ? agentPrompt
+              : mode === "BLOCK_OBJECT_HOLD"
+              ? agentPrompt || "I am holding a book/object in hand — block this posture"
+              : agentPrompt || `Teach posture as ${agentTargetGesture}`,
+          landmarks: liveLm,
+        }),
+      });
+      const data = await res.json();
+      if (data?.success) {
+        if (Array.isArray(data.patches)) {
+          setRuntimeAgentPatches(data.patches);
+        }
+        // Also sync with /api/admin-train so both Admin Model & Agent Rules are updated
+        if (liveLm && liveLm.length === 21) {
+          const adminRes = await fetch("/api/admin-train", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "record_sample",
+              adminLabel:
+                data.patch?.action === "BLOCK_OBJECT_HOLD"
+                  ? "BOOK_HOLD_NEGATIVE"
+                  : data.patch?.targetGesture || agentTargetGesture,
+              frames: [liveLm],
+              notes: data.rootCauseDiagnosis || "In-App AI Self-Healing Capture",
+            }),
+          });
+          const adminData = await adminRes.json();
+          if (adminData?.success && adminData.model) {
+            setActiveAdminModel(adminData.model);
+          }
+        }
+        voterRef.current.reset();
+        timeVoterRef.current.reset();
+        setAgentReport({
+          message: data.message,
+          rootCauseDiagnosis: data.rootCauseDiagnosis,
+          codeSnippet: data.codeSnippet,
+          targetFile: data.targetFile || "src/lib/generated-agent-patches.ts",
+          totalPatches: Array.isArray(data.patches) ? data.patches.length : 1,
+        });
+        if (mode === "PROMPT") setAgentPrompt("");
+      }
+    } catch (err) {
+      console.error("In-App AI Agent error:", err);
+    } finally {
+      setAgentBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (user?.amplitudeRms) setTremorInjectionAmp(user.amplitudeRms);
@@ -505,7 +612,9 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       if (
         bookHoldTestMode === "CASE_1_PHONE_IN_HAND" ||
         bookHoldTestMode === "CASE_2_FREE_HAND_SIDE_PROFILE" ||
-        bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH"
+        bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH" ||
+        bookHoldTestMode === "CASE_4_BOOK_COVER_SIDE_CLAMP" ||
+        bookHoldTestMode === "CASE_5_BOOK_SPINE_EDGE_HOLD"
       ) {
         const baseCase = REAL_WORLD_FAILURE_CASES[bookHoldTestMode];
         const jx = Math.sin(2 * Math.PI * (user?.f0Hz || 5.2) * t) * (tremorInjectionAmp * 0.25);
@@ -527,6 +636,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
                 tremorInjectionAmp
               );
       }
+      r.lastLandmarks = normLandmarks;
       handPresent = true;
     }
 
@@ -577,7 +687,38 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       const isBlockedGraspOrScratch = Boolean(
         classification.objectGraspAnalysis?.isObjectGrasp
       );
-      if (isBlockedGraspOrScratch) {
+
+      // Evaluate CCTV Intentionality & Engagement Mode Gate
+      let cctvGatedBlock = false;
+      if (cctvModeRef.current === "CCTV_WAKE_LOCK") {
+        if (!isBlockedGraspOrScratch && classification.gesture === "OPEN_PALM" && intent.inRoi) {
+          cctvWakeStreakRef.current += 1;
+          if (cctvWakeStreakRef.current >= 14) {
+            cctvWakeUnlockedUntilRef.current = now + 12000;
+          }
+        } else {
+          cctvWakeStreakRef.current = Math.max(0, cctvWakeStreakRef.current - 1);
+        }
+        const remSec = Math.max(
+          0,
+          Math.round(((cctvWakeUnlockedUntilRef.current - now) / 1000) * 10) / 10
+        );
+        if (frameCountRef.current % 5 === 0) {
+          setCctvWakeRemainingSec(remSec);
+        }
+        if (remSec <= 0 && classification.gesture !== "OPEN_PALM") {
+          cctvGatedBlock = true;
+          if (!intent.reasons.includes("CCTV_WAKE_LOCKED")) {
+            intent.reasons.push("CCTV_WAKE_LOCKED");
+          }
+        }
+      } else if (cctvModeRef.current === "STRICT_ZONE_GAZE") {
+        if (!intent.inRoi || !intent.handScaleOk || intent.transit || intent.score < 0.68) {
+          cctvGatedBlock = true;
+        }
+      }
+
+      if (isBlockedGraspOrScratch || cctvGatedBlock) {
         voterRef.current.reset();
         timeVoterRef.current.reset();
         vote = voterRef.current.push("UNKNOWN");
@@ -1193,6 +1334,8 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
                 { id: "CASE_1_PHONE_IN_HAND", label: "📱 Phone+Index" },
                 { id: "CASE_2_FREE_HAND_SIDE_PROFILE", label: "✋ Side Hand" },
                 { id: "CASE_3_NOSE_TINGLING_SCRATCH", label: "👃 Nose Scratch" },
+                { id: "CASE_4_BOOK_COVER_SIDE_CLAMP", label: "📒 Side Book Cover" },
+                { id: "CASE_5_BOOK_SPINE_EDGE_HOLD", label: "📘 Book Spine Edge" },
               ] as const
             ).map((b) => (
               <button
@@ -1242,6 +1385,127 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             </strong>
           </div>
         </div>
+      </div>
+
+      {/* In-App Autonomous Self-Healing AI Agent & CCTV Smart Engagement Bar */}
+      <div className="mt-3 p-3.5 rounded-xl bg-slate-950/95 border border-cyan-500/40 space-y-3 shadow-lg">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            <span className="px-2 py-0.5 rounded bg-cyan-500/20 border border-cyan-500/40 text-cyan-300 text-[10px] font-mono font-bold">
+              🤖 IN-APP AUTONOMOUS AI SELF-HEALING AGENT
+            </span>
+            <span className="text-xs font-semibold text-slate-200">
+              Instant Live Frame Diagnosis, Code Patching (<code>src/lib/generated-agent-patches.ts</code>) &amp; CCTV Wake-Lock
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[10px] font-mono text-slate-400">CCTV Mode:</span>
+            {(
+              [
+                { id: "DIRECT_COMMAND", label: "🟢 Direct Command" },
+                {
+                  id: "CCTV_WAKE_LOCK",
+                  label:
+                    cctvWakeRemainingSec > 0
+                      ? `🔓 CCTV Armed (${cctvWakeRemainingSec}s)`
+                      : "🛡️ CCTV Wake-Lock (Hold ✋ PALM)",
+                },
+                { id: "STRICT_ZONE_GAZE", label: "🎯 Strict Center Zone" },
+              ] as const
+            ).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => setCctvEngagementMode(m.id)}
+                className={`px-2 py-1 rounded text-[10px] font-mono border transition-all ${
+                  cctvEngagementMode === m.id
+                    ? "bg-cyan-500 text-slate-950 font-bold border-cyan-400"
+                    : "bg-slate-900 text-slate-300 border-slate-800 hover:bg-slate-800"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            disabled={agentBusy}
+            onClick={() => handleRunInAppAiAgent("BLOCK_OBJECT_HOLD")}
+            className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 shadow disabled:opacity-50"
+          >
+            <span>🚫 I&apos;m Holding an Object / Book — Auto-Fix &amp; Patch Code Now</span>
+          </button>
+
+          <div className="flex items-center gap-1.5 bg-slate-900 px-2 py-1 rounded-lg border border-slate-800">
+            <span className="text-[11px] text-slate-300 font-mono">Teach as:</span>
+            <select
+              aria-label="Target Gesture for AI Agent"
+              value={agentTargetGesture}
+              onChange={(e) => setAgentTargetGesture(e.target.value as RecognizedGesture)}
+              className="bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-[11px] font-mono text-cyan-300"
+            >
+              {[
+                "OPEN_PALM",
+                "FIST",
+                "THUMBS_UP",
+                "THUMBS_DOWN",
+                "VICTORY",
+                "POINTING_UP",
+                "PINCH",
+                "CALL_ME",
+                "THREE_FINGERS",
+                "FOUR_FINGERS",
+              ].map((g) => (
+                <option key={g} value={g}>
+                  {g}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={agentBusy}
+              onClick={() => handleRunInAppAiAgent("FORCE_GESTURE")}
+              className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold disabled:opacity-50"
+            >
+              ✅ Teach &amp; Patch AI
+            </button>
+          </div>
+
+          <div className="flex-1 min-w-[240px] flex items-center gap-1.5">
+            <input
+              type="text"
+              value={agentPrompt}
+              onChange={(e) => setAgentPrompt(e.target.value)}
+              placeholder="Tell In-App AI Agent what to fix (e.g. 'Holding book sideways, block FIST')..."
+              className="flex-1 px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-xs text-slate-100 placeholder-slate-500"
+            />
+            <button
+              type="button"
+              disabled={agentBusy || !agentPrompt.trim()}
+              onClick={() => handleRunInAppAiAgent("PROMPT")}
+              className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold disabled:opacity-50"
+            >
+              ⚡ Run AI Code Patch
+            </button>
+          </div>
+        </div>
+
+        {agentReport && (
+          <div className="p-2.5 rounded-lg bg-slate-900/95 border border-emerald-500/40 text-[11px] font-mono space-y-1.5">
+            <div className="text-emerald-300 font-bold">{agentReport.message}</div>
+            <div className="text-slate-300">
+              <strong className="text-cyan-300">Root-Cause Diagnosis:</strong>{" "}
+              {agentReport.rootCauseDiagnosis}
+            </div>
+            <pre className="p-2 rounded bg-slate-950 border border-slate-800 text-[10px] text-amber-200 overflow-x-auto">
+              {agentReport.codeSnippet}
+            </pre>
+          </div>
+        )}
       </div>
 
       {handParams && (

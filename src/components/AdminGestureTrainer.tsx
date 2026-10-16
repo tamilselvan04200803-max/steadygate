@@ -10,6 +10,7 @@ import {
   setActiveAdminModel,
   setAdminTrainedModel,
 } from "@/lib/hand-gesture-engine";
+import { setRuntimeAgentPatches } from "@/lib/learned-agent-rules";
 import { HandLandmark2D, HandParameters, RecognizedGesture, UserProfile } from "@/lib/types";
 import {
   ShieldCheck,
@@ -296,6 +297,34 @@ export default function AdminGestureTrainer({
       });
       const data = await res.json();
       if (data.success && data.model) {
+        if (frames[0] && frames[0].length === 21) {
+          try {
+            const agentRes = await fetch("/api/ai-agent", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "auto_fix_frame",
+                patchAction:
+                  selectedAdminLabel === "BOOK_HOLD_NEGATIVE" ||
+                  selectedAdminLabel === "UNKNOWN"
+                    ? "BLOCK_OBJECT_HOLD"
+                    : "FORCE_GESTURE",
+                targetGesture:
+                  selectedAdminLabel !== "BOOK_HOLD_NEGATIVE"
+                    ? selectedAdminLabel
+                    : undefined,
+                userPrompt: notes,
+                landmarks: frames[0],
+              }),
+            });
+            const agentData = await agentRes.json();
+            if (agentData?.success && Array.isArray(agentData.patches)) {
+              setRuntimeAgentPatches(agentData.patches);
+            }
+          } catch {
+            // non-fatal
+          }
+        }
         setActiveAdminModel(data.model);
         setAdminTrainedModel(data.model);
         setModel(data.model);
@@ -303,7 +332,7 @@ export default function AdminGestureTrainer({
         setBenchmark(data.benchmark || null);
         onModelUpdated?.(data.model);
         setStatusBanner(
-          `✓ Admin AI Model v${data.model.version} updated with ${data.recordedCount} frame(s) labeled [${selectedAdminLabel}] under ${env.lightingCondition}.`
+          `✓ Admin AI Model v${data.model.version} & In-App AI Agent Code Patch (src/lib/generated-agent-patches.ts) updated with ${data.recordedCount} frame(s) labeled [${selectedAdminLabel}] under ${env.lightingCondition}.`
         );
       }
     } catch (err) {

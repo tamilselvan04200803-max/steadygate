@@ -11,6 +11,11 @@ import {
 } from "./biomechanics/palm-orientation";
 import { resolveLocaleGesture } from "./locales/gesture-packs";
 import { normalizeFingerROM, projectOntoTorsoGravity } from "./biomechanics/rom-gravity-normalizer";
+import { evaluateAgentPatches } from "./learned-agent-rules";
+import {
+  computeNormalizedShape21,
+  computeMirrorInvariantShapeDistance,
+} from "./generated-agent-patches";
 import type {
   CaregiverBiometricVerdict,
   LocaleGestureResolution,
@@ -200,6 +205,7 @@ export interface AdminGesturePrototype {
     maxBandHz: number;
     maxAllowedRms: number;
   };
+  normalizedShape21?: Array<{ x: number; y: number }>;
 }
 
 export interface AdminNegativeGraspSignature {
@@ -209,6 +215,7 @@ export interface AdminNegativeGraspSignature {
   cApertureRatio: number;
   luminance: number;
   createdAt: string;
+  normalizedShape21?: Array<{ x: number; y: number }>;
 }
 
 export interface AdminTrainedModelState {
@@ -295,6 +302,8 @@ export type ObjectGraspRejectionReason =
   | "PALM_OCCLUDED_BY_OBJECT"
   | "ADMIN_LEARNED_NEGATIVE_GRASP"
   | "WIDE_PHONE_OR_OBJECT_CLASP"
+  | "SIDE_EDGE_BOOK_OR_OBJECT_CLAMP"
+  | "AGENT_SELF_HEALED_OBJECT_RULE"
   | "CASUAL_FACE_TOUCH_OR_SCRATCH";
 
 export interface ObjectGraspAnalysis {
@@ -611,14 +620,34 @@ export function detectObjectGrasp(
     (maxAdminPositiveSim >= 0.85 && straightPipAndMcpCount >= 3) ||
     (straightPipAndMcpCount >= 3 && fourMean >= 0.72);
 
-  // 0. Check Admin-Learned Negative Grasp Signatures (e.g., admin recorded holding a book/phone/mug)
+  // 0a. Check Admin-Learned Negative Grasp Signatures (enabled in both offline & live webcam for user-recorded captures)
   if (
-    !options?.webcamMode &&
     !isPositiveOpenPostureOverride &&
     fourMean <= 0.65 &&
     activeAdminModel.negativeGraspSignatures.length > 0
   ) {
+    const liveShape21 = computeNormalizedShape21(landmarks);
     for (const neg of activeAdminModel.negativeGraspSignatures) {
+      const isUserRecorded = !String(neg.id || "").startsWith("neg_sig_");
+      if (options?.webcamMode && !isUserRecorded && !options?.foreignObjectDetected && visualOccupancy < 0.45) {
+        continue;
+      }
+      if (neg.normalizedShape21 && neg.normalizedShape21.length === 21) {
+        const shapeDist = computeMirrorInvariantShapeDistance(
+          liveShape21,
+          neg.normalizedShape21
+        );
+        if (shapeDist <= 0.14) {
+          return {
+            isObjectGrasp: true,
+            reason: "ADMIN_LEARNED_NEGATIVE_GRASP",
+            bimodalityScore: Math.round(bimodalityScore * 100) / 100,
+            cApertureRatio: Math.round(pinchNorm * 100) / 100,
+            lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
+            apertureOccupancyRatio: Math.max(visualOccupancy, 0.88),
+          };
+        }
+      }
       const c = neg.centroid || (neg as unknown as { fingerFlexion?: number[] }).fingerFlexion;
       if (Array.isArray(c) && c.length === 5) {
         const negFourAvg = (c[1] + c[2] + c[3] + c[4]) / 4.0;
@@ -637,6 +666,21 @@ export function detectObjectGrasp(
           };
         }
       }
+    }
+  }
+
+  // 0b. Check In-App Autonomous AI Agent Synthesized Patches & Side-Edge Book/Object Clamps
+  if (!isPositiveOpenPostureOverride) {
+    const agentEval = evaluateAgentPatches(landmarks, params);
+    if (agentEval && agentEval.matched && agentEval.action === "BLOCK_OBJECT_HOLD") {
+      return {
+        isObjectGrasp: true,
+        reason: agentEval.reason || "SIDE_EDGE_BOOK_OR_OBJECT_CLAMP",
+        bimodalityScore: Math.round(bimodalityScore * 100) / 100,
+        cApertureRatio: Math.round(pinchNorm * 100) / 100,
+        lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
+        apertureOccupancyRatio: Math.max(visualOccupancy, 0.90),
+      };
     }
   }
 
@@ -1184,6 +1228,24 @@ export function classifyHandGesture(
     }
   }
 
+  // Apply In-App Autonomous AI Agent Positive Gesture Patches if matched
+  const agentGesturePatch = evaluateAgentPatches(landmarks, handParams);
+  if (
+    agentGesturePatch &&
+    agentGesturePatch.matched &&
+    agentGesturePatch.action === "FORCE_GESTURE" &&
+    agentGesturePatch.targetGesture &&
+    agentGesturePatch.targetGesture !== "UNKNOWN"
+  ) {
+    const targetG = agentGesturePatch.targetGesture;
+    for (const k of Object.keys(scores) as RecognizedGesture[]) {
+      if (k !== targetG && k !== "UNKNOWN") {
+        scores[k] *= 0.55;
+      }
+    }
+    scores[targetG] = Math.max(scores[targetG], agentGesturePatch.confidence || 0.96);
+  }
+
   // Apply Admin-Trained Environmental & Gesture Prototype Adaptation (Full Mathematical Signature Matching)
   let personalizedBoostApplied = false;
   if (
@@ -1192,6 +1254,7 @@ export function classifyHandGesture(
   ) {
     const liveVec = [thumb, index, middle, ring, pinky];
     const livePip = handParams.pipJointAnglesDeg || [160, 160, 160, 160, 160];
+    const liveShape21 = computeNormalizedShape21(landmarks);
     const isFiveFingerOpenPosture =
       index > openGate &&
       middle > openGate &&
@@ -1204,6 +1267,23 @@ export function classifyHandGesture(
     for (const [gestKey, proto] of Object.entries(activeAdminModel.gesturePrototypes)) {
       const key = gestKey as Exclude<RecognizedGesture, "UNKNOWN">;
       if (proto && Array.isArray(proto.centroid) && proto.centroid.length === 5) {
+        // Direct 21-landmark mirror-invariant shape match for user-recorded Admin positive prototypes
+        if (proto.normalizedShape21 && proto.normalizedShape21.length === 21) {
+          const shapeDist = computeMirrorInvariantShapeDistance(
+            liveShape21,
+            proto.normalizedShape21
+          );
+          if (shapeDist <= 0.14) {
+            for (const otherKey of Object.keys(scores) as RecognizedGesture[]) {
+              if (otherKey !== key && otherKey !== "UNKNOWN") {
+                scores[otherKey] *= 0.6;
+              }
+            }
+            scores[key] = Math.max(scores[key], 0.94);
+            personalizedBoostApplied = true;
+            continue;
+          }
+        }
         // Respect thumb vertical direction when distinguishing THUMBS_UP vs THUMBS_DOWN
         if (key === "THUMBS_UP" && !(thDy >= -0.05 && wristDy >= 0.0)) continue;
         if (key === "THUMBS_DOWN" && thDy >= -0.05 && wristDy >= 0.0) continue;
@@ -1622,6 +1702,8 @@ export const REAL_WORLD_FAILURE_CASES: {
   CASE_1_PHONE_IN_HAND: HandLandmark2D[];
   CASE_2_FREE_HAND_SIDE_PROFILE: HandLandmark2D[];
   CASE_3_NOSE_TINGLING_SCRATCH: HandLandmark2D[];
+  CASE_4_BOOK_COVER_SIDE_CLAMP: HandLandmark2D[];
+  CASE_5_BOOK_SPINE_EDGE_HOLD: HandLandmark2D[];
 } = {
   CASE_1_PHONE_IN_HAND: [
     { x: 0.34, y: 0.915 },
@@ -1691,6 +1773,52 @@ export const REAL_WORLD_FAILURE_CASES: {
     { x: 0.233, y: 0.593 },
     { x: 0.251, y: 0.622 },
     { x: 0.258, y: 0.653 },
+  ],
+  CASE_4_BOOK_COVER_SIDE_CLAMP: [
+    { x: 0.608, y: 0.759 },
+    { x: 0.589, y: 0.659 },
+    { x: 0.576, y: 0.577 },
+    { x: 0.566, y: 0.529 },
+    { x: 0.555, y: 0.491 },
+    { x: 0.655, y: 0.519 },
+    { x: 0.602, y: 0.462 },
+    { x: 0.561, y: 0.452 },
+    { x: 0.527, y: 0.458 },
+    { x: 0.666, y: 0.556 },
+    { x: 0.584, y: 0.516 },
+    { x: 0.529, y: 0.525 },
+    { x: 0.494, y: 0.544 },
+    { x: 0.66, y: 0.604 },
+    { x: 0.574, y: 0.577 },
+    { x: 0.524, y: 0.589 },
+    { x: 0.49, y: 0.611 },
+    { x: 0.645, y: 0.652 },
+    { x: 0.578, y: 0.625 },
+    { x: 0.538, y: 0.631 },
+    { x: 0.511, y: 0.644 },
+  ],
+  CASE_5_BOOK_SPINE_EDGE_HOLD: [
+    { x: 0.614, y: 0.892 },
+    { x: 0.612, y: 0.75 },
+    { x: 0.562, y: 0.652 },
+    { x: 0.502, y: 0.602 },
+    { x: 0.456, y: 0.578 },
+    { x: 0.506, y: 0.625 },
+    { x: 0.408, y: 0.602 },
+    { x: 0.432, y: 0.625 },
+    { x: 0.466, y: 0.64 },
+    { x: 0.482, y: 0.702 },
+    { x: 0.408, y: 0.678 },
+    { x: 0.435, y: 0.696 },
+    { x: 0.464, y: 0.712 },
+    { x: 0.466, y: 0.778 },
+    { x: 0.408, y: 0.748 },
+    { x: 0.432, y: 0.765 },
+    { x: 0.462, y: 0.782 },
+    { x: 0.456, y: 0.848 },
+    { x: 0.412, y: 0.808 },
+    { x: 0.436, y: 0.825 },
+    { x: 0.462, y: 0.84 },
   ],
 };
 

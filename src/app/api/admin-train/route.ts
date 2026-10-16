@@ -14,6 +14,7 @@ import {
 } from "@/lib/hand-gesture-engine";
 import { ExtractedFrameTelemetry, HandLandmark2D, RecognizedGesture } from "@/lib/types";
 import { appendJsonlLog } from "@/lib/storage-logger";
+import { computeNormalizedShape21 } from "@/lib/generated-agent-patches";
 
 const STORAGE_DIR = path.join(process.cwd(), "storage");
 const MODEL_PATH = path.join(STORAGE_DIR, "admin_trained_model.json");
@@ -496,6 +497,7 @@ export async function POST(req: Request) {
               cApertureRatio: cAperture,
               luminance: rec.luminance,
               createdAt: rec.timestamp,
+              normalizedShape21: computeNormalizedShape21(lm),
             });
             if (model.negativeGraspSignatures.length > 40) {
               model.negativeGraspSignatures.pop();

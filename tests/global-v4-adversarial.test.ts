@@ -23,6 +23,7 @@ import {
 } from "../src/lib/signal-processing";
 import {
   classifyHandGesture,
+  extractHandParameters,
   buildExtractedFrameTelemetry,
   computeBoneRatioSignature,
   verifyUserHandBiometrics,
@@ -32,6 +33,12 @@ import {
   setActiveAdminModel,
   getAdminTrainedModel,
 } from "../src/lib/hand-gesture-engine";
+import {
+  synthesizeAgentPatchFromFrame,
+  addRuntimeAgentPatch,
+  setRuntimeAgentPatches,
+} from "../src/lib/learned-agent-rules";
+import { GENERATED_AGENT_PATCHES } from "../src/lib/generated-agent-patches";
 import {
   MONK_SKIN_TONE_RGB_REFERENCE,
   AdaptiveSkinCalibrator,
@@ -823,6 +830,70 @@ async function runGlobalV4Suite() {
       "G9.7 Live webcam OPEN_PALM immediately clears transit on stationary hold & returns 0% object occupancy",
       `transit=${lastIntent.transit}, inRoi=${lastIntent.inRoi}, apertureOccupancy=${occ}`
     );
+  }
+
+  // G9.8 Real-World Failure Cases 4 & 5 (Side-Edge Book Cover Clamp & Vertical Book Spine Grip)
+  {
+    const c4 = REAL_WORLD_FAILURE_CASES.CASE_4_BOOK_COVER_SIDE_CLAMP;
+    const c4Mirrored = c4.map((p) => ({ x: 1 - p.x, y: p.y }));
+    const c5 = REAL_WORLD_FAILURE_CASES.CASE_5_BOOK_SPINE_EDGE_HOLD;
+    const c5Mirrored = c5.map((p) => ({ x: 1 - p.x, y: p.y }));
+
+    const r4 = classifyHandGesture(c4, null, { webcamMode: true });
+    const r4m = classifyHandGesture(c4Mirrored, null, { webcamMode: true });
+    const r5 = classifyHandGesture(c5, null, { webcamMode: true });
+    const r5m = classifyHandGesture(c5Mirrored, null, { webcamMode: true });
+
+    assert(
+      r4.gesture === "UNKNOWN" &&
+        r4.objectGraspAnalysis?.isObjectGrasp === true &&
+        r4m.gesture === "UNKNOWN" &&
+        r4m.objectGraspAnalysis?.isObjectGrasp === true &&
+        r5.gesture === "UNKNOWN" &&
+        r5.objectGraspAnalysis?.isObjectGrasp === true &&
+        r5m.gesture === "UNKNOWN" &&
+        r5m.objectGraspAnalysis?.isObjectGrasp === true,
+      "G9.8 Side-Edge Book Cover Clamp (image-1) & Vertical Book Spine Grip (image-2) + mirrored variants are 100% blocked as object hold",
+      `c4=${r4.objectGraspAnalysis?.reason}, c5=${r5.objectGraspAnalysis?.reason}`
+    );
+  }
+
+  // G9.9 Embedded In-App Autonomous Self-Healing AI Agent Live Rule & Code Synthesis
+  {
+    // Construct a novel arbitrary object-holding posture that initially classifies as FIST
+    const novelObjectPose = generateSyntheticGestureLandmarks("FIST", 0).map((p, idx) =>
+      idx === 4 ? { x: p.x - 0.04, y: p.y - 0.03 } : p
+    );
+    const before = classifyHandGesture(novelObjectPose, null, { webcamMode: true });
+    const hp = extractHandParameters(novelObjectPose);
+    const { patch, rootCauseDiagnosis } = synthesizeAgentPatchFromFrame({
+      landmarks: novelObjectPose,
+      handParams: hp,
+      action: "BLOCK_OBJECT_HOLD",
+      userNotes: "Novel object hold taught via In-App Self-Healing AI Agent",
+    });
+    addRuntimeAgentPatch(patch);
+
+    const afterDirect = classifyHandGesture(novelObjectPose, null, { webcamMode: true });
+    const afterMirrored = classifyHandGesture(
+      novelObjectPose.map((p) => ({ x: 1 - p.x, y: p.y })),
+      null,
+      { webcamMode: true }
+    );
+
+    assert(
+      before.gesture === "FIST" &&
+        afterDirect.gesture === "UNKNOWN" &&
+        afterDirect.objectGraspAnalysis?.isObjectGrasp === true &&
+        afterMirrored.gesture === "UNKNOWN" &&
+        afterMirrored.objectGraspAnalysis?.isObjectGrasp === true &&
+        rootCauseDiagnosis.length > 20,
+      "G9.9 In-App Autonomous AI Agent synthesizes mirror-invariant 21-landmark patch and immediately blocks novel object hold on live webcam",
+      `before=${before.gesture} -> after=${afterDirect.gesture} (${afterDirect.objectGraspAnalysis?.reason})`
+    );
+
+    // Restore clean baseline patches after test
+    setRuntimeAgentPatches(GENERATED_AGENT_PATCHES);
   }
 
   console.log("\n================================================================================");

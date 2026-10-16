@@ -479,8 +479,23 @@ export class SceneAnalyzer {
     const d4_10 =
       Math.hypot(landmarks[4].x - landmarks[10].x, landmarks[4].y - landmarks[10].y) / palmLen;
 
-    // Require a physical C-clamp span between the thumb and opposing PIP joints
-    if (d4_5 < 0.35 || d4_10 < 0.55) {
+    const mcps = [5, 9, 13, 17];
+    const pips = [6, 10, 14, 18];
+    let horizFingerCount = 0;
+    for (let i = 0; i < 4; i++) {
+      const m = landmarks[mcps[i]];
+      const p = landmarks[pips[i]];
+      if (Math.abs(p.x - m.x) > Math.abs(p.y - m.y) * 1.1) horizFingerCount++;
+    }
+    const isSideEdgeBookPosture =
+      horizFingerCount >= 3 &&
+      landmarks[5].y < landmarks[9].y &&
+      landmarks[9].y < landmarks[13].y &&
+      landmarks[13].y < landmarks[17].y;
+
+    // Require either a physical C-clamp span between thumb and opposing PIP joints
+    // OR a side-edge book clamp posture where the thumb is occluded behind the book
+    if ((d4_5 < 0.35 || d4_10 < 0.55) && !isSideEdgeBookPosture) {
       return 0;
     }
 
