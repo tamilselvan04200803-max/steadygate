@@ -402,33 +402,52 @@ export function detectObjectGrasp(
     };
   }
 
-  // 2. Book-spine / half-curled object grasp shelf:
-  // If >= 2 fingers sit in the semi-flexed grasp band [0.22, 0.58] with no finger fully extended (< 0.62)
-  // and no precision pinch contact, it is an object grasp (e.g. holding a book/phone/mug) or mid-transition
-  const semiFlexedCount = four.filter((v) => v >= 0.22 && v <= 0.58).length;
-  if (semiFlexedCount >= 2 && fourMax < 0.62 && pinchNorm > 0.24) {
+  // 3. Lumbrical book-edge C-clamp: MCP joints bent/flexed (< 145 deg) around book edge
+  // while PIP-DIP-Tip segments extend straight along book cover
+  const mIdx = angleAt(wrist, landmarks[5], landmarks[6]);
+  const mMid = angleAt(wrist, landmarks[9], landmarks[10]);
+  const mRng = angleAt(wrist, landmarks[13], landmarks[14]);
+  const mPnk = angleAt(wrist, landmarks[17], landmarks[18]);
+  const meanMcpAngle = (mIdx + mMid + mRng + mPnk) / 4.0;
+  const dIdx = dist(landmarks[8], landmarks[5]) / palmLen;
+  const dMid = dist(landmarks[12], landmarks[9]) / palmLen;
+  const dRng = dist(landmarks[16], landmarks[13]) / palmLen;
+  const dPnk = dist(landmarks[20], landmarks[17]) / palmLen;
+  const minTipToMcp = Math.min(dIdx, dMid, dRng, dPnk);
+
+  if (
+    meanStraight > 0.65 &&
+    meanMcpAngle < 145 &&
+    minTipToMcp > 0.55 &&
+    pinchNorm > 0.35
+  ) {
     return {
       isObjectGrasp: true,
-      reason: "BOOK_OR_OBJECT_GRASP",
+      reason: "LUMBRICAL_BOOK_CLAMP",
       bimodalityScore: Math.round(bimodalityScore * 100) / 100,
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
     };
   }
 
-  // 3. Lumbrical book-edge C-clamp: MCP joints bent ~70-90 deg around book edge (low wrist reach)
-  // while PIP-DIP-Tip segments press flat against book cover (high straightness)
+  // 5. Cylindrical cup/mug or phone side-clamp: fingertips held out from MCPs with C-aperture
+  const tipToMcpMean =
+    (dist(landmarks[8], landmarks[5]) +
+      dist(landmarks[12], landmarks[9]) +
+      dist(landmarks[16], landmarks[13]) +
+      dist(landmarks[20], landmarks[17])) /
+    (4.0 * palmLen);
   if (
     fourMean >= 0.16 &&
-    meanStraight > 0.68 &&
-    meanWristReach < 0.36 &&
-    fourMax < 0.62 &&
-    pinchNorm >= 0.38 &&
-    pinchNorm <= 1.1
+    fourMean <= 0.46 &&
+    fourMax < 0.52 &&
+    tipToMcpMean > 0.52 &&
+    pinchNorm >= 0.42 &&
+    pinchNorm <= 1.15
   ) {
     return {
       isObjectGrasp: true,
-      reason: "LUMBRICAL_BOOK_CLAMP",
+      reason: "CYLINDRICAL_CUP_OR_PHONE_GRASP",
       bimodalityScore: Math.round(bimodalityScore * 100) / 100,
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
@@ -454,24 +473,14 @@ export function detectObjectGrasp(
     };
   }
 
-  // 5. Cylindrical cup/mug or phone side-clamp: fingertips held out from MCPs with C-aperture
-  const tipToMcpMean =
-    (dist(landmarks[8], landmarks[5]) +
-      dist(landmarks[12], landmarks[9]) +
-      dist(landmarks[16], landmarks[13]) +
-      dist(landmarks[20], landmarks[17])) /
-    (4.0 * palmLen);
-  if (
-    fourMean >= 0.16 &&
-    fourMean <= 0.46 &&
-    fourMax < 0.52 &&
-    tipToMcpMean > 0.52 &&
-    pinchNorm >= 0.42 &&
-    pinchNorm <= 0.95
-  ) {
+  // 2. Book-spine / half-curled object grasp shelf (general catch-all fallback):
+  // If >= 2 fingers sit in the semi-flexed grasp band [0.22, 0.58] with no finger fully extended (< 0.62)
+  // and no precision pinch contact, it is an object grasp (e.g. holding a book/phone/mug) or mid-transition
+  const semiFlexedCount = four.filter((v) => v >= 0.22 && v <= 0.58).length;
+  if (semiFlexedCount >= 2 && fourMax < 0.62 && pinchNorm > 0.24) {
     return {
       isObjectGrasp: true,
-      reason: "CYLINDRICAL_CUP_OR_PHONE_GRASP",
+      reason: "BOOK_OR_OBJECT_GRASP",
       bimodalityScore: Math.round(bimodalityScore * 100) / 100,
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,

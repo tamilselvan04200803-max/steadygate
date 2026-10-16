@@ -1,7 +1,7 @@
 [
   {
-    "id": "adm_1792114717775_e8n7",
-    "timestamp": "2026-10-16T01:38:37.775Z",
+    "id": "adm_1792126478456_tig5",
+    "timestamp": "2026-10-16T04:54:38.456Z",
     "adminLabel": "BOOK_HOLD_NEGATIVE",
     "predictedBefore": "UNKNOWN",
     "fingerFlexion": [
@@ -17,17 +17,17 @@
     "d4_9Ratio": 0.58,
     "luminance": 0.12,
     "contrast": 0.08,
-    "clutter": 0.22,
-    "gamma": 0.54,
-    "lightingCondition": "LOW_LIGHT_12_LUX",
-    "tremorHz": 5.6,
-    "tremorAmp": 0.042,
+    "clutter": 0.35,
+    "gamma": 1,
+    "lightingCondition": "LOW_LIGHT_DARK",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.035,
     "source": "LIVE_ADMIN_VIDEO",
     "notes": "Admin verification: holding book spine in low light"
   },
   {
-    "id": "adm_1792114717776_vkjl",
-    "timestamp": "2026-10-16T01:38:37.776Z",
+    "id": "adm_1792126478457_f2u3",
+    "timestamp": "2026-10-16T04:54:38.457Z",
     "adminLabel": "BOOK_HOLD_NEGATIVE",
     "predictedBefore": "UNKNOWN",
     "fingerFlexion": [
@@ -43,17 +43,17 @@
     "d4_9Ratio": 0.58,
     "luminance": 0.12,
     "contrast": 0.08,
-    "clutter": 0.22,
-    "gamma": 0.54,
-    "lightingCondition": "LOW_LIGHT_12_LUX",
-    "tremorHz": 5.6,
-    "tremorAmp": 0.042,
+    "clutter": 0.35,
+    "gamma": 1,
+    "lightingCondition": "LOW_LIGHT_DARK",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.035,
     "source": "LIVE_ADMIN_VIDEO",
     "notes": "Admin verification: holding book spine in low light"
   },
   {
-    "id": "adm_1792114717776_a4go",
-    "timestamp": "2026-10-16T01:38:37.776Z",
+    "id": "adm_1792126478457_4qx6",
+    "timestamp": "2026-10-16T04:54:38.457Z",
     "adminLabel": "BOOK_HOLD_NEGATIVE",
     "predictedBefore": "UNKNOWN",
     "fingerFlexion": [
@@ -69,11 +69,11 @@
     "d4_9Ratio": 0.58,
     "luminance": 0.12,
     "contrast": 0.08,
-    "clutter": 0.22,
-    "gamma": 0.54,
-    "lightingCondition": "LOW_LIGHT_12_LUX",
-    "tremorHz": 5.6,
-    "tremorAmp": 0.042,
+    "clutter": 0.35,
+    "gamma": 1,
+    "lightingCondition": "LOW_LIGHT_DARK",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.035,
     "source": "LIVE_ADMIN_VIDEO",
     "notes": "Admin verification: holding book spine in low light"
   }

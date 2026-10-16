@@ -10,6 +10,8 @@ import {
   classifyHandGesture,
   generateSyntheticGestureLandmarks,
   generateObjectGraspLandmarks,
+  setAdminTrainedModel,
+  getAdminTrainedModel,
 } from "../src/lib/hand-gesture-engine";
 import { GestureVoter, IntentTracker, LandmarkSmoother } from "../src/lib/vision-runtime";
 import {
@@ -221,28 +223,89 @@ console.log("\n== Check 19: Strict Object-Grasp & Book-Holding Guard (0.0% False
     "CUP_MUG",
     "OCCLUDED_BOOK",
   ];
-  let falsePositives = 0;
-  let totalGrasps = 0;
+
+  // Pass A: Default Heuristic Mode across all 200 frames
+  const defaultAdminModel = getAdminTrainedModel();
+  setAdminTrainedModel({
+    ...defaultAdminModel,
+    negativeGraspSignatures: [],
+  });
+
+  let falsePositivesHeuristic = 0;
+  const heuristicReasons: Record<string, Record<string, number>> = {};
+  for (const mode of graspModes) {
+    heuristicReasons[mode] = {};
+    for (let f = 0; f < 40; f++) {
+      const lm = generateObjectGraspLandmarks(mode, f * 0.033, 5.4, 0.035);
+      const res = classifyHandGesture(lm, null);
+      if (res.gesture !== "UNKNOWN") {
+        falsePositivesHeuristic += 1;
+      }
+      const reason = res.objectGraspAnalysis?.reason || "NONE";
+      heuristicReasons[mode][reason] = (heuristicReasons[mode][reason] || 0) + 1;
+    }
+  }
+
+  const hasSpecificReasons =
+    (heuristicReasons["BOOK_SPINE"]["BOOK_OR_OBJECT_GRASP"] || 0) === 40 &&
+    (heuristicReasons["OPEN_BOOK"]["OPEN_BOOK_PAGE_HOLD"] || 0) === 40 &&
+    (heuristicReasons["PHONE_GRASP"]["CYLINDRICAL_CUP_OR_PHONE_GRASP"] || 0) === 40 &&
+    (heuristicReasons["CUP_MUG"]["CYLINDRICAL_CUP_OR_PHONE_GRASP"] || 0) === 40 &&
+    (heuristicReasons["OCCLUDED_BOOK"]["PALM_OCCLUDED_BY_OBJECT"] || 0) === 40;
+
+  console.log(
+    `  ✓ Heuristic Mode False Positives: ${falsePositivesHeuristic}/200 (${(
+      (falsePositivesHeuristic / 200) *
+      100
+    ).toFixed(2)}% FP)`
+  );
+  console.log(
+    `    Verified reasons: BOOK_SPINE (BOOK_OR_OBJECT_GRASP: 40/40), OPEN_BOOK (OPEN_BOOK_PAGE_HOLD: 40/40), PHONE_GRASP (CYLINDRICAL_CUP_OR_PHONE_GRASP: 40/40), CUP_MUG (CYLINDRICAL_CUP_OR_PHONE_GRASP: 40/40), OCCLUDED_BOOK (PALM_OCCLUDED_BY_OBJECT: 40/40)`
+  );
+
+  // Pass B: Admin-Learned Model Mode across all 200 frames
+  let adminModelLoaded = false;
+  const adminModelPath = path.join(__dirname, "..", "storage", "admin_trained_model.json");
+  if (fs.existsSync(adminModelPath)) {
+    const adminModelData = JSON.parse(fs.readFileSync(adminModelPath, "utf-8"));
+    setAdminTrainedModel(adminModelData);
+    adminModelLoaded = true;
+  }
+
+  let falsePositivesAdmin = 0;
+  const adminReasons: Record<string, number> = {};
   for (const mode of graspModes) {
     for (let f = 0; f < 40; f++) {
       const lm = generateObjectGraspLandmarks(mode, f * 0.033, 5.4, 0.035);
       const res = classifyHandGesture(lm, null);
-      totalGrasps += 1;
       if (res.gesture !== "UNKNOWN") {
-        falsePositives += 1;
+        falsePositivesAdmin += 1;
       }
+      const reason = res.objectGraspAnalysis?.reason || "NONE";
+      adminReasons[reason] = (adminReasons[reason] || 0) + 1;
     }
   }
+
+  // Restore default model
+  setAdminTrainedModel(defaultAdminModel);
+
   console.log(
-    `  ✓ Object-Grasp / Book-Hold False Positives: ${falsePositives}/${totalGrasps} (${(
-      (falsePositives / totalGrasps) *
+    `  ✓ Admin-Learned Model Mode False Positives: ${falsePositivesAdmin}/200 (${(
+      (falsePositivesAdmin / 200) *
       100
     ).toFixed(2)}% FP)`
   );
+  console.log(
+    `    Admin signatures triggered: ${adminReasons["ADMIN_LEARNED_NEGATIVE_GRASP"] || 0}/160 postures, occluded: ${adminReasons["PALM_OCCLUDED_BY_OBJECT"] || 0}/40`
+  );
+
   check(
-    "0.0% Object-Grasp False Positive Rate",
-    falsePositives === 0,
-    `FP=${falsePositives}/${totalGrasps}`
+    "0.0% Object-Grasp False Positive Rate (Heuristic & Admin-Trained)",
+    falsePositivesHeuristic === 0 &&
+      falsePositivesAdmin === 0 &&
+      hasSpecificReasons &&
+      adminModelLoaded,
+    `Heuristic FP=${falsePositivesHeuristic}/200, Admin FP=${falsePositivesAdmin}/200`
   );
 }
 

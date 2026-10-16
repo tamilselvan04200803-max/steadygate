@@ -42,3 +42,7 @@ __pycache__/
 
 
 *.egg-info/
+
+# Local logs and agent artifacts
+/logs/
+/.agents/

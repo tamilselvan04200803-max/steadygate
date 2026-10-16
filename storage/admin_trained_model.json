@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "updatedAt": "2026-10-16T01:38:37.776Z",
+  "updatedAt": "2026-10-16T04:54:38.457Z",
   "totalSamplesTrained": 17216,
   "hagridCalibratedCount": 17213,
   "gesturePrototypes": {
@@ -187,7 +187,7 @@
   },
   "negativeGraspSignatures": [
     {
-      "id": "adm_1792114717776_a4go",
+      "id": "adm_1792126478457_4qx6",
       "label": "Admin verification: holding book spine in low light",
       "centroid": [
         0.519,
@@ -198,10 +198,10 @@
       ],
       "cApertureRatio": 1.07,
       "luminance": 0.12,
-      "createdAt": "2026-10-16T01:38:37.776Z"
+      "createdAt": "2026-10-16T04:54:38.457Z"
     },
     {
-      "id": "adm_1792114717776_vkjl",
+      "id": "adm_1792126478457_f2u3",
       "label": "Admin verification: holding book spine in low light",
       "centroid": [
         0.519,
@@ -212,10 +212,10 @@
       ],
       "cApertureRatio": 1.07,
       "luminance": 0.12,
-      "createdAt": "2026-10-16T01:38:37.776Z"
+      "createdAt": "2026-10-16T04:54:38.457Z"
     },
     {
-      "id": "adm_1792114717775_e8n7",
+      "id": "adm_1792126478456_tig5",
       "label": "Admin verification: holding book spine in low light",
       "centroid": [
         0.519,
@@ -226,7 +226,7 @@
       ],
       "cApertureRatio": 1.07,
       "luminance": 0.12,
-      "createdAt": "2026-10-16T01:38:37.775Z"
+      "createdAt": "2026-10-16T04:54:38.456Z"
     }
   ],
   "environmentalWeights": {

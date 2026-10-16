@@ -325,18 +325,22 @@ export class SceneAnalyzer {
 
     if (mean < 0.36) {
       gain = Math.min(2.35, 0.46 / Math.max(0.1, mean));
-      gamma = Math.max(0.45, Math.min(0.88, Math.log(0.5) / Math.log(Math.max(0.08, mean))));
-      contrastGain = Math.min(1.85, 1.25 + (0.36 - mean) * 1.4);
+      // Dynamic gamma adaptation centering on 0.75 for low-light shadow lifting
+      gamma = Math.max(0.70, Math.min(0.85, 0.75 + (mean - 0.22) * 0.5));
+      // CLAHE contrast enhancement dynamically scaling up to 2.2x
+      contrastGain = Math.min(2.2, 1.25 + (0.36 - mean) * 2.6);
       claheActive = true;
       lightingCondition = "LOW_LIGHT_GAMMA_CLAHE";
     } else if (mean > 0.78) {
       gain = 0.82;
-      gamma = Math.min(1.55, Math.max(1.15, Math.log(0.5) / Math.log(Math.min(0.95, mean))));
+      // Dynamic gamma adaptation capping at 1.35 for harsh glare highlight compression
+      gamma = Math.min(1.35, Math.max(1.15, 1.20 + (mean - 0.78) * 0.9));
       contrastGain = 1.22;
       claheActive = true;
       lightingCondition = "HARSH_BACKLIGHT_GLARE_COMP";
     } else if (contrast < 0.15) {
-      contrastGain = Math.min(1.9, 0.22 / Math.max(0.06, contrast));
+      // CLAHE contrast enhancement dynamically scaling up to 2.2x for low-contrast scenes
+      contrastGain = Math.min(2.2, 0.22 / Math.max(0.06, contrast));
       claheActive = true;
       lightingCondition = "LOW_CONTRAST_CLAHE";
     }
