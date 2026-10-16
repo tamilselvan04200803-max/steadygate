@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "updatedAt": "2026-10-16T04:54:38.457Z",
+  "updatedAt": "2026-10-16T12:48:49.738Z",
   "totalSamplesTrained": 17216,
   "hagridCalibratedCount": 17213,
   "gesturePrototypes": {
@@ -20,7 +20,39 @@
       "glareSamples": 170,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        105.9,
+        87.1,
+        86,
+        85,
+        85
+      ],
+      "mcpJointAnglesDeg": [
+        79.3,
+        85.9,
+        92.3,
+        99.8
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 0.468,
+        "indexMiddle": 0.178,
+        "middleRing": 0.219,
+        "ringPinky": 0.22,
+        "thumbPinkySpan": 1.009,
+        "d4_5": 0.132,
+        "d4_9": 0.312,
+        "d4_13": 0.481,
+        "d4_17": 0.665
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "OPEN_PALM": {
       "gesture": "OPEN_PALM",
@@ -38,7 +70,39 @@
       "glareSamples": 297,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        158.3,
+        177.9,
+        180,
+        175.9,
+        171.7
+      ],
+      "mcpJointAnglesDeg": [
+        167.6,
+        177.1,
+        179.5,
+        175.9
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 0.841,
+        "indexMiddle": 0.339,
+        "middleRing": 0.484,
+        "ringPinky": 0.464,
+        "thumbPinkySpan": 1.753,
+        "d4_5": 0.621,
+        "d4_9": 0.843,
+        "d4_13": 1.105,
+        "d4_17": 1.334
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "THUMBS_UP": {
       "gesture": "THUMBS_UP",
@@ -56,7 +120,39 @@
       "glareSamples": 258,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        176.4,
+        92.2,
+        91.2,
+        89.1,
+        87.1
+      ],
+      "mcpJointAnglesDeg": [
+        84.3,
+        90.9,
+        96.3,
+        101.8
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 1.189,
+        "indexMiddle": 0.18,
+        "middleRing": 0.221,
+        "ringPinky": 0.212,
+        "thumbPinkySpan": 1.712,
+        "d4_5": 0.614,
+        "d4_9": 0.691,
+        "d4_13": 0.949,
+        "d4_17": 1.199
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "THUMBS_DOWN": {
       "gesture": "THUMBS_DOWN",
@@ -74,7 +170,39 @@
       "glareSamples": 233,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        178.4,
+        89.1,
+        87.1,
+        87.1,
+        85
+      ],
+      "mcpJointAnglesDeg": [
+        81.3,
+        86.9,
+        94.3,
+        99.8
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 1.359,
+        "indexMiddle": 0.162,
+        "middleRing": 0.232,
+        "ringPinky": 0.206,
+        "thumbPinkySpan": 1.435,
+        "d4_5": 1.572,
+        "d4_9": 1.729,
+        "d4_13": 1.731,
+        "d4_17": 1.704
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "CALL_ME": {
       "gesture": "CALL_ME",
@@ -92,7 +220,39 @@
       "glareSamples": 271,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        158.9,
+        87.1,
+        87.1,
+        87.1,
+        177.9
+      ],
+      "mcpJointAnglesDeg": [
+        79.3,
+        86.9,
+        94.3,
+        169.9
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 1.195,
+        "indexMiddle": 0.195,
+        "middleRing": 0.232,
+        "ringPinky": 1.197,
+        "thumbPinkySpan": 1.66,
+        "d4_5": 0.647,
+        "d4_9": 0.867,
+        "d4_13": 1.13,
+        "d4_17": 1.359
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "POINTING_UP": {
       "gesture": "POINTING_UP",
@@ -110,7 +270,39 @@
       "glareSamples": 227,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        103.3,
+        180,
+        89.1,
+        87.1,
+        85
+      ],
+      "mcpJointAnglesDeg": [
+        169.6,
+        88.9,
+        94.3,
+        99.8
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 0.989,
+        "indexMiddle": 1.429,
+        "middleRing": 0.215,
+        "ringPinky": 0.206,
+        "thumbPinkySpan": 1.035,
+        "d4_5": 0.116,
+        "d4_9": 0.32,
+        "d4_13": 0.5,
+        "d4_17": 0.688
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "VICTORY": {
       "gesture": "VICTORY",
@@ -128,7 +320,39 @@
       "glareSamples": 501,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        103.3,
+        177.9,
+        175.9,
+        89.1,
+        87.1
+      ],
+      "mcpJointAnglesDeg": [
+        167.6,
+        173.1,
+        96.3,
+        101.8
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 0.989,
+        "indexMiddle": 0.431,
+        "middleRing": 1.539,
+        "ringPinky": 0.212,
+        "thumbPinkySpan": 1.063,
+        "d4_5": 0.116,
+        "d4_9": 0.32,
+        "d4_13": 0.5,
+        "d4_17": 0.688
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "PINCH": {
       "gesture": "PINCH",
@@ -146,7 +370,39 @@
       "glareSamples": 287,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        171,
+        163.6,
+        174.8,
+        175.9,
+        173.8
+      ],
+      "mcpJointAnglesDeg": [
+        161.6,
+        172.1,
+        179.5,
+        173.9
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 0,
+        "indexMiddle": 0.772,
+        "middleRing": 0.365,
+        "ringPinky": 0.416,
+        "thumbPinkySpan": 1.111,
+        "d4_5": 0.276,
+        "d4_9": 0.285,
+        "d4_13": 0.548,
+        "d4_17": 0.797
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "THREE_FINGERS": {
       "gesture": "THREE_FINGERS",
@@ -164,7 +420,39 @@
       "glareSamples": 560,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        105.9,
+        177.9,
+        177.9,
+        174.8,
+        87.1
+      ],
+      "mcpJointAnglesDeg": [
+        167.6,
+        175.1,
+        179.5,
+        101.8
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 1.003,
+        "indexMiddle": 0.385,
+        "middleRing": 0.461,
+        "ringPinky": 1.537,
+        "thumbPinkySpan": 1.038,
+        "d4_5": 0.132,
+        "d4_9": 0.312,
+        "d4_13": 0.481,
+        "d4_17": 0.665
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     },
     "FOUR_FINGERS": {
       "gesture": "FOUR_FINGERS",
@@ -182,13 +470,45 @@
       "glareSamples": 294,
       "meanLuminance": 0.48,
       "meanContrast": 0.21,
-      "confidenceBoost": 1.04
+      "confidenceBoost": 1.04,
+      "pipJointAnglesDeg": [
+        109.4,
+        177.9,
+        177.9,
+        175.9,
+        173.8
+      ],
+      "mcpJointAnglesDeg": [
+        167.6,
+        175.1,
+        179.5,
+        173.9
+      ],
+      "normalHandSize": 0.2,
+      "handDistanceEstimate": 4.99,
+      "normalFingerDistances": {
+        "thumbIndex": 1.023,
+        "indexMiddle": 0.385,
+        "middleRing": 0.437,
+        "ringPinky": 0.416,
+        "thumbPinkySpan": 1.277,
+        "d4_5": 0.157,
+        "d4_9": 0.305,
+        "d4_13": 0.457,
+        "d4_17": 0.634
+      },
+      "thresholdFrequencies": {
+        "dominantTremorHz": 5.2,
+        "minBandHz": 4,
+        "maxBandHz": 12,
+        "maxAllowedRms": 0.085
+      }
     }
   },
   "negativeGraspSignatures": [
     {
-      "id": "adm_1792126478457_4qx6",
-      "label": "Admin verification: holding book spine in low light",
+      "id": "neg_sig_1",
+      "label": "Confirmed BOOK_SPINE Physical Object Clamp",
       "centroid": [
         0.519,
         0.291,
@@ -197,42 +517,42 @@
         0.534
       ],
       "cApertureRatio": 1.07,
-      "luminance": 0.12,
-      "createdAt": "2026-10-16T04:54:38.457Z"
+      "luminance": 0.42,
+      "createdAt": "2026-10-16T12:48:49.738Z"
     },
     {
-      "id": "adm_1792126478457_f2u3",
-      "label": "Admin verification: holding book spine in low light",
+      "id": "neg_sig_2",
+      "label": "Confirmed OPEN_BOOK Physical Object Clamp",
       "centroid": [
-        0.519,
-        0.291,
-        0.37,
-        0.434,
-        0.534
+        0.527,
+        0.332,
+        0.412,
+        0.479,
+        0.558
       ],
-      "cApertureRatio": 1.07,
-      "luminance": 0.12,
-      "createdAt": "2026-10-16T04:54:38.457Z"
+      "cApertureRatio": 1.189,
+      "luminance": 0.42,
+      "createdAt": "2026-10-16T12:48:49.738Z"
     },
     {
-      "id": "adm_1792126478456_tig5",
-      "label": "Admin verification: holding book spine in low light",
+      "id": "neg_sig_3",
+      "label": "Confirmed PHONE_GRASP Physical Object Clamp",
       "centroid": [
         0.519,
-        0.291,
-        0.37,
-        0.434,
-        0.534
+        0.251,
+        0.329,
+        0.39,
+        0.487
       ],
-      "cApertureRatio": 1.07,
-      "luminance": 0.12,
-      "createdAt": "2026-10-16T04:54:38.456Z"
+      "cApertureRatio": 1.073,
+      "luminance": 0.42,
+      "createdAt": "2026-10-16T12:48:49.738Z"
     }
   ],
   "environmentalWeights": {
-    "lowLightGammaGain": 1.45,
+    "lowLightGammaGain": 1.42,
     "glareCompressionGain": 1.22,
     "clutterMarginBonus": 0.08,
-    "adaptedErrorReductionPct": 94.1
+    "adaptedErrorReductionPct": 96.4
   }
 }

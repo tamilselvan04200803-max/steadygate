@@ -455,28 +455,40 @@ export class SceneAnalyzer {
   }
 
   /**
-   * Real-time photometric verification of whether a physical foreign object (phone, book, cup)
-   * is actually clamped between the thumb and opposing fingers in the live camera frame.
-   * Prevents empty hands on a live webcam from ever being falsely flagged as holding an object.
+   * Computes `apertureObjectOccupancy` in [0..1]: the ratio of pixels inside the
+   * Grasp Aperture Polygon bounded by Thumb Tip (4), Index Tip (8), Pinky Tip (20),
+   * and Palm Center (0, 5, 9, 17) that are neither static background pixels nor user
+   * skin pixels (combining foreign object chrominance/luminance mass and internal
+   * Sobel edge boundaries of a book spine, phone body, or mug wall).
    */
-  detectHeldObjectInHand(landmarks: HandLandmark2D[], rgbaBuffer?: Uint8ClampedArray): boolean {
-    if (!landmarks || landmarks.length < 21) return false;
+  computeApertureObjectOccupancy(
+    landmarks: HandLandmark2D[],
+    rgbaBuffer?: Uint8ClampedArray
+  ): number {
+    if (!landmarks || landmarks.length < 21) return 0;
     const activeRgba = rgbaBuffer || this.lastRgba;
-    if (!activeRgba || activeRgba.length < 64 * 48 * 4) return false;
+    if (!activeRgba || activeRgba.length < 64 * 48 * 4) return 0;
 
     const wrist = landmarks[0];
-    const palmLen = Math.max(Math.hypot(wrist.x - landmarks[9].x, wrist.y - landmarks[9].y), 1e-5);
-    const d4_5 = Math.hypot(landmarks[4].x - landmarks[5].x, landmarks[4].y - landmarks[5].y) / palmLen;
-    const d4_10 = Math.hypot(landmarks[4].x - landmarks[10].x, landmarks[4].y - landmarks[10].y) / palmLen;
-    const d4_14 = Math.hypot(landmarks[4].x - landmarks[14].x, landmarks[4].y - landmarks[14].y) / palmLen;
+    const palmLen = Math.max(
+      Math.hypot(wrist.x - landmarks[9].x, wrist.y - landmarks[9].y),
+      1e-5
+    );
+    const d4_5 =
+      Math.hypot(landmarks[4].x - landmarks[5].x, landmarks[4].y - landmarks[5].y) / palmLen;
+    const d4_10 =
+      Math.hypot(landmarks[4].x - landmarks[10].x, landmarks[4].y - landmarks[10].y) / palmLen;
 
     // Require a physical C-clamp span between the thumb and opposing PIP joints
     if (d4_5 < 0.35 || d4_10 < 0.55) {
-      return false;
+      return 0;
     }
 
     // 1. Sample surrounding room background outside the hand bounding box
-    let minX = 1, maxX = 0, minY = 1, maxY = 0;
+    let minX = 1,
+      maxX = 0,
+      minY = 1,
+      maxY = 0;
     for (const p of landmarks) {
       if (p.x < minX) minX = p.x;
       if (p.x > maxX) maxX = p.x;
@@ -484,11 +496,13 @@ export class SceneAnalyzer {
       if (p.y > maxY) maxY = p.y;
     }
 
-    let bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
+    let bgR = 0,
+      bgG = 0,
+      bgB = 0,
+      bgCount = 0;
     const bx0 = Math.max(1, Math.floor((minX - 0.08) * 64));
     const bx1 = Math.min(62, Math.ceil((maxX + 0.08) * 64));
     const by0 = Math.max(1, Math.floor((minY - 0.08) * 48));
-    const by1 = Math.min(46, Math.ceil((maxY + 0.08) * 48));
     for (let x = bx0; x <= bx1; x += 3) {
       const topIdx = (by0 * 64 + x) * 4;
       bgR += activeRgba[topIdx];
@@ -496,21 +510,37 @@ export class SceneAnalyzer {
       bgB += activeRgba[topIdx + 2];
       bgCount++;
     }
-    if (bgCount === 0) return false;
+    if (bgCount === 0) return 0;
     bgR /= bgCount;
     bgG /= bgCount;
     bgB /= bgCount;
 
-    // 2. Sample interior points along the span between thumb (3, 4) and opposing fingers (6, 10, 14)
+    // 2. Sample Palm Center (0, 5, 9, 17) as skin reference
+    const palmCenter: HandLandmark2D = {
+      x: (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[17].x) / 4,
+      y: (landmarks[0].y + landmarks[5].y + landmarks[9].y + landmarks[17].y) / 4,
+    };
+    const pcx = Math.max(1, Math.min(62, Math.round(palmCenter.x * 64)));
+    const pcy = Math.max(1, Math.min(46, Math.round(palmCenter.y * 48)));
+    const pIdx = (pcy * 64 + pcx) * 4;
+    const palmR = activeRgba[pIdx];
+    const palmG = activeRgba[pIdx + 1];
+    const palmB = activeRgba[pIdx + 2];
+
+    // 3. Inspect Grasp Aperture Polygon bounded by Thumb Tip (4), Index Tip (8),
+    // Pinky Tip (20), and Palm Center (0, 5, 9, 17) + thumb-to-PIP chords
     const anchors: Array<[HandLandmark2D, HandLandmark2D]> = [
+      [landmarks[4], landmarks[8]],
       [landmarks[4], landmarks[6]],
       [landmarks[4], landmarks[10]],
+      [landmarks[4], landmarks[20]],
       [landmarks[3], landmarks[10]],
       [landmarks[3], landmarks[14]],
-      [landmarks[2], landmarks[14]],
+      [landmarks[8], palmCenter],
+      [landmarks[20], palmCenter],
     ];
 
-    let foreignPixels = 0;
+    let foreignMassScore = 0;
     let totalSamples = 0;
     for (const [pA, pB] of anchors) {
       for (const t of [0.3, 0.5, 0.7]) {
@@ -521,15 +551,46 @@ export class SceneAnalyzer {
         const g = activeRgba[idx + 1];
         const b = activeRgba[idx + 2];
         totalSamples++;
-        const isSkin = this.skinCalibrator.isUserSkinPixel(r, g, b);
+        const isSkin =
+          this.skinCalibrator.isUserSkinPixel(r, g, b) ||
+          Math.hypot(r - palmR, g - palmG, b - palmB) < 34.0;
         const bgDist = Math.hypot(r - bgR, g - bgG, b - bgB);
-        if (!isSkin && bgDist > 42.0) {
-          foreignPixels++;
+
+        // Compute local Sobel edge gradient (book spine, phone bezel, or mug wall)
+        const leftIdx = (sy * 64 + (sx - 1)) * 4;
+        const rightIdx = (sy * 64 + (sx + 1)) * 4;
+        const upIdx = ((sy - 1) * 64 + sx) * 4;
+        const downIdx = ((sy + 1) * 64 + sx) * 4;
+        const gx =
+          activeRgba[rightIdx] -
+          activeRgba[leftIdx] +
+          (activeRgba[rightIdx + 1] - activeRgba[leftIdx + 1]);
+        const gy =
+          activeRgba[downIdx] -
+          activeRgba[upIdx] +
+          (activeRgba[downIdx + 1] - activeRgba[upIdx + 1]);
+        const sobelEdge = Math.hypot(gx, gy) > 48.0 ? 0.15 : 0;
+
+        if (!isSkin && bgDist > 40.0) {
+          foreignMassScore += Math.min(1.0, 0.9 + sobelEdge);
         }
       }
     }
 
-    return totalSamples > 0 && foreignPixels / totalSamples >= 0.65;
+    if (totalSamples === 0) return 0;
+    return Math.round(Math.min(1, foreignMassScore / totalSamples) * 100) / 100;
+  }
+
+  /**
+   * Real-time photometric verification of whether a physical foreign object (phone, book, cup)
+   * is actually clamped between the thumb and opposing fingers in the live camera frame.
+   * Prevents empty hands on a live webcam from ever being falsely flagged as holding an object.
+   */
+  detectHeldObjectInHand(
+    landmarks: HandLandmark2D[],
+    rgbaBuffer?: Uint8ClampedArray
+  ): boolean {
+    return this.computeApertureObjectOccupancy(landmarks, rgbaBuffer) >= 0.45;
   }
 
   /** Analyse every Nth frame on a 64x48 downsample with histogram percentiles & adaptive gamma/CLAHE. */

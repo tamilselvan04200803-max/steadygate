@@ -8,6 +8,7 @@ import {
   RecognizedGesture,
   HandLandmark2D,
   HandParameters,
+  ExtractedFrameTelemetry,
 } from "@/lib/types";
 import {
   extractMotionSignature,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/signal-processing";
 import {
   classifyHandGesture,
+  buildExtractedFrameTelemetry,
   generateSyntheticGestureLandmarks,
   generateObjectGraspLandmarks,
   REAL_WORLD_FAILURE_CASES,
@@ -86,6 +88,7 @@ interface LiveCameraStreamProps {
     gesture: RecognizedGesture;
     confidence: number;
     webcamActive: boolean;
+    extractedTelemetry?: ExtractedFrameTelemetry;
   }) => void;
   expandedView?: boolean;
   onToggleExpandedView?: () => void;
@@ -535,13 +538,17 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       const faceOverlapDetected = webcam
         ? sceneRef.current.detectFaceNoseOverlap(normLandmarks)
         : bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH";
+      const apertureOccupancyRatio = webcam
+        ? sceneRef.current.computeApertureObjectOccupancy(normLandmarks)
+        : undefined;
       const foreignObjectDetected = webcam
-        ? sceneRef.current.detectHeldObjectInHand(normLandmarks)
+        ? (apertureOccupancyRatio ?? 0) >= 0.45
         : false;
       classification = classifyHandGesture(normLandmarks, user, {
         faceOverlapDetected,
         webcamMode: !!webcam,
         foreignObjectDetected,
+        apertureOccupancyRatio,
         localeCountryCode,
       });
       setHandParams(classification.handParams);
@@ -599,12 +606,31 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       if (trajectoryBufferRef.current.length > 90) trajectoryBufferRef.current.shift();
 
       if (frameCountRef.current % 3 === 0 && onLiveHandFrame) {
+        const extractedTelemetry = buildExtractedFrameTelemetry({
+          landmarks: normLandmarks,
+          classification,
+          tremor: {
+            dominantTremorHz: tremorLockStatus?.activeF0Hz ?? user?.f0Hz ?? 5.2,
+            tremorAmplitudeRms: user?.amplitudeRms ?? 0.032,
+            spectralConcentration: tremorLockStatus?.spectralConcentration ?? 0.75,
+            normalizedStability: 0.88,
+            lockStage: tremorLockStatus?.stage ?? "FINALIZED_LOCKED",
+          },
+          sceneOptics: {
+            luminanceMean: hud.scene?.luminance ?? 0.48,
+            contrastStd: hud.scene?.contrast ?? 0.21,
+            snrDb: hud.scene?.snrDb ?? 24.5,
+            appliedGamma: hud.scene?.gamma ?? 1.0,
+            claheGain: hud.scene?.contrastGain ?? 1.0,
+          },
+        });
         onLiveHandFrame({
           landmarks: normLandmarks,
           handParams: classification.handParams,
           gesture: webcam && vote ? vote.committed : classification.gesture,
           confidence: classification.confidence,
           webcamActive: !!webcam,
+          extractedTelemetry,
         });
       }
     } else {

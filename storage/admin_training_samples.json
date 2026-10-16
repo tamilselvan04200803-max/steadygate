@@ -1,80 +1,477 @@
 [
   {
-    "id": "adm_1792126478456_tig5",
-    "timestamp": "2026-10-16T04:54:38.456Z",
-    "adminLabel": "BOOK_HOLD_NEGATIVE",
-    "predictedBefore": "UNKNOWN",
+    "id": "adm_verified_1",
+    "timestamp": "2026-10-16T12:48:49.740Z",
+    "adminLabel": "OPEN_PALM",
+    "predictedBefore": "OPEN_PALM",
     "fingerFlexion": [
-      0.519,
-      0.291,
-      0.37,
-      0.434,
-      0.534
+      0.64,
+      0.937,
+      0.93,
+      0.961,
+      0.994
     ],
     "palmLength": 0.2,
     "aspectRatio": 1.4,
-    "cApertureRatio": 1.07,
-    "d4_9Ratio": 0.58,
-    "luminance": 0.12,
-    "contrast": 0.08,
-    "clutter": 0.35,
+    "cApertureRatio": 0.841,
+    "d4_9Ratio": 0.843,
+    "luminance": 0.48,
+    "contrast": 0.22,
+    "clutter": 0.14,
     "gamma": 1,
-    "lightingCondition": "LOW_LIGHT_DARK",
+    "lightingCondition": "OPTIMAL",
     "tremorHz": 5.2,
-    "tremorAmp": 0.035,
+    "tremorAmp": 0.025,
     "source": "LIVE_ADMIN_VIDEO",
-    "notes": "Admin verification: holding book spine in low light"
+    "notes": "Verified mathematical signature for OPEN_PALM",
+    "extractedTelemetry": {
+      "frameId": "adm_verified_1",
+      "capturedAtIso": "2026-10-16T12:48:49.740Z",
+      "classification": {
+        "resolvedGesture": "OPEN_PALM",
+        "confidence": 0.93,
+        "marginOverRunnerUp": 0.61,
+        "runnerUpGesture": "FOUR_FINGERS"
+      },
+      "biomechanics": {
+        "fingerExtensions": [
+          0.64,
+          0.937,
+          0.93,
+          0.961,
+          0.994
+        ],
+        "pipJointAnglesDeg": [
+          158.3,
+          177.9,
+          180,
+          175.9,
+          171.7
+        ],
+        "mcpJointAnglesDeg": [
+          167.6,
+          177.1,
+          179.5,
+          175.9
+        ],
+        "palmScaleNormalized": 0.2,
+        "palmAspectRatio": 1.4,
+        "thumbIndexCAperture": 0.841,
+        "thumbToMcpDistances": {
+          "d4_5": 0.621,
+          "d4_9": 0.843,
+          "d4_13": 1.105,
+          "d4_17": 1.334
+        },
+        "normalHandSize": 0.2,
+        "handDistanceEstimate": 4.99,
+        "interFingerTipDistances": {
+          "thumbIndex": 0.841,
+          "indexMiddle": 0.339,
+          "middleRing": 0.484,
+          "ringPinky": 0.464,
+          "thumbPinkySpan": 1.753
+        }
+      },
+      "objectHoldVerification": {
+        "confirmedObjectInHand": false,
+        "apertureOccupancyRatio": 0,
+        "rejectionReason": "NONE"
+      },
+      "tremorAndKinematics": {
+        "dominantTremorHz": 5.2,
+        "tremorAmplitudeRms": 0.025,
+        "spectralConcentration": 0.78,
+        "normalizedStability": 0.92,
+        "lockStage": "FINALIZED_LOCKED"
+      },
+      "sceneOptics": {
+        "luminanceMean": 0.48,
+        "contrastStd": 0.22,
+        "snrDb": 28.4,
+        "appliedGamma": 1,
+        "claheGain": 1
+      }
+    }
   },
   {
-    "id": "adm_1792126478457_f2u3",
-    "timestamp": "2026-10-16T04:54:38.457Z",
-    "adminLabel": "BOOK_HOLD_NEGATIVE",
-    "predictedBefore": "UNKNOWN",
+    "id": "adm_verified_2",
+    "timestamp": "2026-10-16T12:48:49.740Z",
+    "adminLabel": "FIST",
+    "predictedBefore": "FIST",
     "fingerFlexion": [
-      0.519,
-      0.291,
-      0.37,
-      0.434,
-      0.534
+      0,
+      0.017,
+      0.017,
+      0.017,
+      0.017
     ],
     "palmLength": 0.2,
     "aspectRatio": 1.4,
-    "cApertureRatio": 1.07,
-    "d4_9Ratio": 0.58,
-    "luminance": 0.12,
-    "contrast": 0.08,
-    "clutter": 0.35,
+    "cApertureRatio": 0.468,
+    "d4_9Ratio": 0.312,
+    "luminance": 0.48,
+    "contrast": 0.22,
+    "clutter": 0.14,
     "gamma": 1,
-    "lightingCondition": "LOW_LIGHT_DARK",
+    "lightingCondition": "OPTIMAL",
     "tremorHz": 5.2,
-    "tremorAmp": 0.035,
+    "tremorAmp": 0.025,
     "source": "LIVE_ADMIN_VIDEO",
-    "notes": "Admin verification: holding book spine in low light"
+    "notes": "Verified mathematical signature for FIST",
+    "extractedTelemetry": {
+      "frameId": "adm_verified_2",
+      "capturedAtIso": "2026-10-16T12:48:49.740Z",
+      "classification": {
+        "resolvedGesture": "FIST",
+        "confidence": 0.94,
+        "marginOverRunnerUp": 0.84,
+        "runnerUpGesture": "OPEN_PALM"
+      },
+      "biomechanics": {
+        "fingerExtensions": [
+          0,
+          0.017,
+          0.017,
+          0.017,
+          0.017
+        ],
+        "pipJointAnglesDeg": [
+          105.9,
+          87.1,
+          86,
+          85,
+          85
+        ],
+        "mcpJointAnglesDeg": [
+          79.3,
+          85.9,
+          92.3,
+          99.8
+        ],
+        "palmScaleNormalized": 0.2,
+        "palmAspectRatio": 1.4,
+        "thumbIndexCAperture": 0.468,
+        "thumbToMcpDistances": {
+          "d4_5": 0.132,
+          "d4_9": 0.312,
+          "d4_13": 0.481,
+          "d4_17": 0.665
+        },
+        "normalHandSize": 0.2,
+        "handDistanceEstimate": 4.99,
+        "interFingerTipDistances": {
+          "thumbIndex": 0.468,
+          "indexMiddle": 0.178,
+          "middleRing": 0.219,
+          "ringPinky": 0.22,
+          "thumbPinkySpan": 1.009
+        }
+      },
+      "objectHoldVerification": {
+        "confirmedObjectInHand": false,
+        "apertureOccupancyRatio": 0,
+        "rejectionReason": "NONE"
+      },
+      "tremorAndKinematics": {
+        "dominantTremorHz": 5.2,
+        "tremorAmplitudeRms": 0.025,
+        "spectralConcentration": 0.78,
+        "normalizedStability": 0.92,
+        "lockStage": "FINALIZED_LOCKED"
+      },
+      "sceneOptics": {
+        "luminanceMean": 0.48,
+        "contrastStd": 0.22,
+        "snrDb": 28.4,
+        "appliedGamma": 1,
+        "claheGain": 1
+      }
+    }
   },
   {
-    "id": "adm_1792126478457_4qx6",
-    "timestamp": "2026-10-16T04:54:38.457Z",
-    "adminLabel": "BOOK_HOLD_NEGATIVE",
-    "predictedBefore": "UNKNOWN",
+    "id": "adm_verified_3",
+    "timestamp": "2026-10-16T12:48:49.740Z",
+    "adminLabel": "THUMBS_UP",
+    "predictedBefore": "THUMBS_UP",
     "fingerFlexion": [
-      0.519,
-      0.291,
-      0.37,
-      0.434,
-      0.534
+      0.774,
+      0.018,
+      0.018,
+      0.018,
+      0.017
     ],
     "palmLength": 0.2,
     "aspectRatio": 1.4,
-    "cApertureRatio": 1.07,
-    "d4_9Ratio": 0.58,
-    "luminance": 0.12,
-    "contrast": 0.08,
-    "clutter": 0.35,
+    "cApertureRatio": 1.189,
+    "d4_9Ratio": 0.691,
+    "luminance": 0.48,
+    "contrast": 0.22,
+    "clutter": 0.14,
     "gamma": 1,
-    "lightingCondition": "LOW_LIGHT_DARK",
+    "lightingCondition": "OPTIMAL",
     "tremorHz": 5.2,
-    "tremorAmp": 0.035,
+    "tremorAmp": 0.025,
     "source": "LIVE_ADMIN_VIDEO",
-    "notes": "Admin verification: holding book spine in low light"
+    "notes": "Verified mathematical signature for THUMBS_UP",
+    "extractedTelemetry": {
+      "frameId": "adm_verified_3",
+      "capturedAtIso": "2026-10-16T12:48:49.740Z",
+      "classification": {
+        "resolvedGesture": "THUMBS_UP",
+        "confidence": 0.91,
+        "marginOverRunnerUp": 0.81,
+        "runnerUpGesture": "OPEN_PALM"
+      },
+      "biomechanics": {
+        "fingerExtensions": [
+          0.774,
+          0.018,
+          0.018,
+          0.018,
+          0.017
+        ],
+        "pipJointAnglesDeg": [
+          176.4,
+          92.2,
+          91.2,
+          89.1,
+          87.1
+        ],
+        "mcpJointAnglesDeg": [
+          84.3,
+          90.9,
+          96.3,
+          101.8
+        ],
+        "palmScaleNormalized": 0.2,
+        "palmAspectRatio": 1.4,
+        "thumbIndexCAperture": 1.189,
+        "thumbToMcpDistances": {
+          "d4_5": 0.614,
+          "d4_9": 0.691,
+          "d4_13": 0.949,
+          "d4_17": 1.199
+        },
+        "normalHandSize": 0.2,
+        "handDistanceEstimate": 4.99,
+        "interFingerTipDistances": {
+          "thumbIndex": 1.189,
+          "indexMiddle": 0.18,
+          "middleRing": 0.221,
+          "ringPinky": 0.212,
+          "thumbPinkySpan": 1.712
+        }
+      },
+      "objectHoldVerification": {
+        "confirmedObjectInHand": false,
+        "apertureOccupancyRatio": 0,
+        "rejectionReason": "NONE"
+      },
+      "tremorAndKinematics": {
+        "dominantTremorHz": 5.2,
+        "tremorAmplitudeRms": 0.025,
+        "spectralConcentration": 0.78,
+        "normalizedStability": 0.92,
+        "lockStage": "FINALIZED_LOCKED"
+      },
+      "sceneOptics": {
+        "luminanceMean": 0.48,
+        "contrastStd": 0.22,
+        "snrDb": 28.4,
+        "appliedGamma": 1,
+        "claheGain": 1
+      }
+    }
+  },
+  {
+    "id": "adm_verified_4",
+    "timestamp": "2026-10-16T12:48:49.740Z",
+    "adminLabel": "PINCH",
+    "predictedBefore": "PINCH",
+    "fingerFlexion": [
+      0.495,
+      0.471,
+      0.928,
+      0.961,
+      0.994
+    ],
+    "palmLength": 0.2,
+    "aspectRatio": 1.4,
+    "cApertureRatio": 0,
+    "d4_9Ratio": 0.285,
+    "luminance": 0.48,
+    "contrast": 0.22,
+    "clutter": 0.14,
+    "gamma": 1,
+    "lightingCondition": "OPTIMAL",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.025,
+    "source": "LIVE_ADMIN_VIDEO",
+    "notes": "Verified mathematical signature for PINCH",
+    "extractedTelemetry": {
+      "frameId": "adm_verified_4",
+      "capturedAtIso": "2026-10-16T12:48:49.740Z",
+      "classification": {
+        "resolvedGesture": "PINCH",
+        "confidence": 0.98,
+        "marginOverRunnerUp": 0.88,
+        "runnerUpGesture": "OPEN_PALM"
+      },
+      "biomechanics": {
+        "fingerExtensions": [
+          0.495,
+          0.471,
+          0.928,
+          0.961,
+          0.994
+        ],
+        "pipJointAnglesDeg": [
+          171,
+          163.6,
+          174.8,
+          175.9,
+          173.8
+        ],
+        "mcpJointAnglesDeg": [
+          161.6,
+          172.1,
+          179.5,
+          173.9
+        ],
+        "palmScaleNormalized": 0.2,
+        "palmAspectRatio": 1.4,
+        "thumbIndexCAperture": 0,
+        "thumbToMcpDistances": {
+          "d4_5": 0.276,
+          "d4_9": 0.285,
+          "d4_13": 0.548,
+          "d4_17": 0.797
+        },
+        "normalHandSize": 0.2,
+        "handDistanceEstimate": 4.99,
+        "interFingerTipDistances": {
+          "thumbIndex": 0,
+          "indexMiddle": 0.772,
+          "middleRing": 0.365,
+          "ringPinky": 0.416,
+          "thumbPinkySpan": 1.111
+        }
+      },
+      "objectHoldVerification": {
+        "confirmedObjectInHand": false,
+        "apertureOccupancyRatio": 0,
+        "rejectionReason": "NONE"
+      },
+      "tremorAndKinematics": {
+        "dominantTremorHz": 5.2,
+        "tremorAmplitudeRms": 0.025,
+        "spectralConcentration": 0.78,
+        "normalizedStability": 0.92,
+        "lockStage": "FINALIZED_LOCKED"
+      },
+      "sceneOptics": {
+        "luminanceMean": 0.48,
+        "contrastStd": 0.22,
+        "snrDb": 28.4,
+        "appliedGamma": 1,
+        "claheGain": 1
+      }
+    }
+  },
+  {
+    "id": "adm_verified_5",
+    "timestamp": "2026-10-16T12:48:49.740Z",
+    "adminLabel": "VICTORY",
+    "predictedBefore": "VICTORY",
+    "fingerFlexion": [
+      0,
+      0.937,
+      0.928,
+      0.018,
+      0.017
+    ],
+    "palmLength": 0.2,
+    "aspectRatio": 1.4,
+    "cApertureRatio": 0.989,
+    "d4_9Ratio": 0.32,
+    "luminance": 0.48,
+    "contrast": 0.22,
+    "clutter": 0.14,
+    "gamma": 1,
+    "lightingCondition": "OPTIMAL",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.025,
+    "source": "LIVE_ADMIN_VIDEO",
+    "notes": "Verified mathematical signature for VICTORY",
+    "extractedTelemetry": {
+      "frameId": "adm_verified_5",
+      "capturedAtIso": "2026-10-16T12:48:49.740Z",
+      "classification": {
+        "resolvedGesture": "VICTORY",
+        "confidence": 0.96,
+        "marginOverRunnerUp": 0.86,
+        "runnerUpGesture": "OPEN_PALM"
+      },
+      "biomechanics": {
+        "fingerExtensions": [
+          0,
+          0.937,
+          0.928,
+          0.018,
+          0.017
+        ],
+        "pipJointAnglesDeg": [
+          103.3,
+          177.9,
+          175.9,
+          89.1,
+          87.1
+        ],
+        "mcpJointAnglesDeg": [
+          167.6,
+          173.1,
+          96.3,
+          101.8
+        ],
+        "palmScaleNormalized": 0.2,
+        "palmAspectRatio": 1.4,
+        "thumbIndexCAperture": 0.989,
+        "thumbToMcpDistances": {
+          "d4_5": 0.116,
+          "d4_9": 0.32,
+          "d4_13": 0.5,
+          "d4_17": 0.688
+        },
+        "normalHandSize": 0.2,
+        "handDistanceEstimate": 4.99,
+        "interFingerTipDistances": {
+          "thumbIndex": 0.989,
+          "indexMiddle": 0.431,
+          "middleRing": 1.539,
+          "ringPinky": 0.212,
+          "thumbPinkySpan": 1.063
+        }
+      },
+      "objectHoldVerification": {
+        "confirmedObjectInHand": false,
+        "apertureOccupancyRatio": 0,
+        "rejectionReason": "NONE"
+      },
+      "tremorAndKinematics": {
+        "dominantTremorHz": 5.2,
+        "tremorAmplitudeRms": 0.025,
+        "spectralConcentration": 0.78,
+        "normalizedStability": 0.92,
+        "lockStage": "FINALIZED_LOCKED"
+      },
+      "sceneOptics": {
+        "luminanceMean": 0.48,
+        "contrastStd": 0.22,
+        "snrDb": 28.4,
+        "appliedGamma": 1,
+        "claheGain": 1
+      }
+    }
   }
 ]

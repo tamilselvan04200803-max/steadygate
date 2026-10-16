@@ -111,6 +111,7 @@ export default function SteadyGateApp() {
     gesture: RecognizedGesture;
     confidence: number;
     webcamActive: boolean;
+    extractedTelemetry?: import("@/lib/types").ExtractedFrameTelemetry;
   } | null>(null);
 
   const liveIntentScore = Number(
@@ -569,18 +570,22 @@ export default function SteadyGateApp() {
     }
   };
 
-  // Continuous Background User Data Observation Collector (writes to storage/ and logs/ every 4s)
+  // Continuous Background User Data Observation Collector (writes real ExtractedFrameTelemetry to storage/ and logs/ every 4s)
   const latestStateForBgRef = useRef({
     selectedProfile,
     selectedAppliance,
     detectedGesture,
     posterior,
+    margin,
+    attention,
+    sceneQuality,
     currentF0Hz,
     currentAmpRms,
     stabilityRaw,
     stabilityNorm,
     liveIntentScore,
     filterEnabled,
+    liveHandFrame,
   });
 
   useEffect(() => {
@@ -589,30 +594,45 @@ export default function SteadyGateApp() {
       selectedAppliance,
       detectedGesture,
       posterior,
+      margin,
+      attention,
+      sceneQuality,
       currentF0Hz,
       currentAmpRms,
       stabilityRaw,
       stabilityNorm,
       liveIntentScore,
       filterEnabled,
+      liveHandFrame,
     };
   }, [
     selectedProfile,
     selectedAppliance,
     detectedGesture,
     posterior,
+    margin,
+    attention,
+    sceneQuality,
     currentF0Hz,
     currentAmpRms,
     stabilityRaw,
     stabilityNorm,
     liveIntentScore,
     filterEnabled,
+    liveHandFrame,
   ]);
 
   useEffect(() => {
     const interval = setInterval(async () => {
       const st = latestStateForBgRef.current;
-      if (!st.selectedProfile) return;
+      // Never log a frame unless a valid hand was tracked with real extracted telemetry and a recognized gesture
+      if (
+        !st.selectedProfile ||
+        !st.liveHandFrame?.extractedTelemetry ||
+        st.detectedGesture === "UNKNOWN"
+      ) {
+        return;
+      }
 
       try {
         const obsRes = await fetch("/api/user-data", {
@@ -621,23 +641,21 @@ export default function SteadyGateApp() {
           body: JSON.stringify({
             userId: st.selectedProfile.id,
             userName: st.selectedProfile.name,
-            source: "BACKGROUND_TELEMETRY",
+            condition: st.selectedProfile.condition,
+            medicationPhase: st.selectedProfile.medicationPhase,
+            streamSource: st.liveHandFrame.webcamActive ? "LIVE_WEBCAM" : "SIMULATED",
             gesture: st.detectedGesture,
             confidence: st.posterior,
-            tremorHz: st.currentF0Hz,
-            tremorAmplitude: st.currentAmpRms,
-            rawVariance: st.stabilityRaw,
-            filteredVariance: Number((st.stabilityRaw * 0.25).toFixed(4)),
-            stability: st.stabilityNorm,
-            intentScore: st.liveIntentScore,
-            palmScale: st.selectedProfile.palmScale ?? 0.2,
-            fingerSpread: st.selectedProfile.fingerFlexibility ?? 0.45,
-            fingerExtensions: [0.85, 0.88, 0.86, 0.82, 0.78],
-            wristAngleDeg: -3.0,
+            margin: st.margin,
+            attention: st.attention,
+            sceneQuality: st.sceneQuality,
+            f0Hz: st.currentF0Hz,
+            amplitudeRms: st.currentAmpRms,
+            stabilityRaw: st.stabilityRaw,
+            stabilityNorm: st.stabilityNorm,
+            handParams: st.liveHandFrame.handParams,
+            extractedTelemetry: st.liveHandFrame.extractedTelemetry,
             selectedApplianceId: st.selectedAppliance?.id ?? null,
-            notes: `Continuous background observation (Filter=${
-              st.filterEnabled ? "ON" : "OFF"
-            })`,
           }),
         });
 

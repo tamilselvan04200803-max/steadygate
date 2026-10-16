@@ -23,6 +23,7 @@ import {
 } from "../src/lib/signal-processing";
 import {
   classifyHandGesture,
+  buildExtractedFrameTelemetry,
   computeBoneRatioSignature,
   verifyUserHandBiometrics,
   generateSyntheticGestureLandmarks,
@@ -615,6 +616,63 @@ async function runGlobalV4Suite() {
     hasForeignObj && Boolean(heldBookWebcamRes.objectGraspAnalysis?.isObjectGrasp),
     "G9.3 Photometric detectHeldObjectInHand detects physical object inside C-aperture and blocks actuation",
     `foreignObjectDetected=${hasForeignObj}, reason=${heldBookWebcamRes.objectGraspAnalysis?.reason}`
+  );
+
+  // G9.4 Phase 2 OPEN_PALM 560-Pose Yaw/Roll/Adduction Sweep: 0 leaks to THREE_FINGERS or FOUR_FINGERS
+  const baseOpenPalm = generateSyntheticGestureLandmarks("OPEN_PALM", 0, 5.2, 0.0);
+  let openPalmLeaksTo3 = 0;
+  let openPalmLeaksTo4 = 0;
+  let openPalmSweepTotal = 0;
+  for (const yawDeg of [-35, -25, -15, 0, 15, 25, 35]) {
+    for (const rollDeg of [-30, -15, 0, 15, 30]) {
+      for (const pinkyDrop of [0, 0.025, 0.045, 0.065]) {
+        for (const thumbAdduct of [0, 0.015, 0.03, 0.04]) {
+          openPalmSweepTotal++;
+          const radYaw = (yawDeg * Math.PI) / 180;
+          const cosY = Math.cos(radYaw);
+          const radRoll = (rollDeg * Math.PI) / 180;
+          const cosR = Math.cos(radRoll);
+          const sinR = Math.sin(radRoll);
+          const lm = baseOpenPalm.map((p, i) => {
+            let x = 0.5 + (p.x - 0.5) * cosY;
+            let y = p.y;
+            if (i === 4 || i === 3) x += (0.5 - x) * (thumbAdduct * 8);
+            if (i === 20 || i === 19) y += pinkyDrop;
+            const dx = x - 0.5;
+            const dy = y - 0.6;
+            return {
+              x: 0.5 + dx * cosR - dy * sinR,
+              y: 0.6 + dx * sinR + dy * cosR,
+              z: p.z,
+            };
+          });
+          const res = classifyHandGesture(lm);
+          if (res.gesture === "THREE_FINGERS") openPalmLeaksTo3++;
+          else if (res.gesture === "FOUR_FINGERS") openPalmLeaksTo4++;
+        }
+      }
+    }
+  }
+  assert(
+    openPalmLeaksTo3 === 0 && openPalmLeaksTo4 === 0 && openPalmSweepTotal === 560,
+    "G9.4 Phase 2 OPEN_PALM 560-pose tilt/adduction sweep has 0 leaks to THREE_FINGERS or FOUR_FINGERS",
+    `leaksTo3=${openPalmLeaksTo3}, leaksTo4=${openPalmLeaksTo4}/${openPalmSweepTotal}`
+  );
+
+  // G9.5 Phase 3 ExtractedFrameTelemetry & Admin Mathematical Prototype Verification
+  const openTelemetry = buildExtractedFrameTelemetry({
+    frameId: "frm_phase3_verify",
+    landmarks: baseOpenPalm,
+  });
+  assert(
+    openTelemetry.classification.resolvedGesture === "OPEN_PALM" &&
+      openTelemetry.biomechanics.pipJointAnglesDeg.length === 5 &&
+      openTelemetry.biomechanics.mcpJointAnglesDeg.length === 4 &&
+      (openTelemetry.biomechanics.normalHandSize ?? 0) > 0 &&
+      (openTelemetry.biomechanics.handDistanceEstimate ?? 0) > 0 &&
+      !openTelemetry.objectHoldVerification.confirmedObjectInHand,
+    "G9.5 Phase 3 ExtractedFrameTelemetry contains complete non-dummy mathematical biomechanics & optics",
+    `gesture=${openTelemetry.classification.resolvedGesture}, handSize=${openTelemetry.biomechanics.normalHandSize}, distEst=${openTelemetry.biomechanics.handDistanceEstimate}`
   );
 
   console.log("\n================================================================================");

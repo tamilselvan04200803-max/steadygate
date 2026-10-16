@@ -47,6 +47,81 @@ export interface HandParameters {
   fingerFlexion: [number, number, number, number, number]; // thumb, index, middle, ring, pinky (0: fully bent, 1: fully extended)
   aspectRatio: number;
   tiltAngleDeg: number;
+  pipJointAnglesDeg?: [number, number, number, number, number];
+  mcpJointAnglesDeg?: [number, number, number, number];
+  thumbIndexCAperture?: number;
+  thumbToMcpDistances?: { d4_5: number; d4_9: number; d4_13: number; d4_17: number };
+  interFingerTipDistances?: {
+    thumbIndex: number;
+    indexMiddle: number;
+    middleRing: number;
+    ringPinky: number;
+    thumbPinkySpan: number;
+  };
+  normalHandSize?: number;
+  handDistanceEstimate?: number;
+}
+
+export type GestureLabel = RecognizedGesture;
+
+export type ObjectGraspRejectionReason =
+  | "NONE"
+  | "BOOK_OR_OBJECT_GRASP"
+  | "OPEN_BOOK_PAGE_HOLD"
+  | "CYLINDRICAL_CUP_OR_PHONE_GRASP"
+  | "PALM_OCCLUDED_BY_OBJECT"
+  | "LUMBRICAL_BOOK_CLAMP"
+  | "ADMIN_LEARNED_NEGATIVE_GRASP"
+  | "WIDE_PHONE_OR_OBJECT_CLASP"
+  | "CASUAL_FACE_TOUCH_OR_SCRATCH"
+  | "CAREGIVER_OR_BYSTANDER_HAND_IGNORED";
+
+export interface ExtractedFrameTelemetry {
+  frameId: string;
+  capturedAtIso: string;
+  classification: {
+    resolvedGesture: GestureLabel;
+    confidence: number; // [0..1] real classifier score
+    marginOverRunnerUp: number; // [0..1] score1 - score2
+    runnerUpGesture: GestureLabel;
+  };
+  biomechanics: {
+    fingerExtensions: [number, number, number, number, number]; // [thumb, idx, mid, rng, pnk]
+    pipJointAnglesDeg: [number, number, number, number, number]; // Real 3-point joint angles
+    mcpJointAnglesDeg: [number, number, number, number]; // [idx, mid, rng, pnk] MCP fold
+    palmScaleNormalized: number;
+    palmAspectRatio: number;
+    thumbIndexCAperture: number;
+    thumbToMcpDistances: { d4_5: number; d4_9: number; d4_13: number; d4_17: number };
+    normalHandSize?: number;
+    handDistanceEstimate?: number;
+    interFingerTipDistances?: {
+      thumbIndex: number;
+      indexMiddle: number;
+      middleRing: number;
+      ringPinky: number;
+      thumbPinkySpan: number;
+    };
+  };
+  objectHoldVerification: {
+    confirmedObjectInHand: boolean;
+    apertureOccupancyRatio: number; // Real visual/contact evidence score
+    rejectionReason: ObjectGraspRejectionReason;
+  };
+  tremorAndKinematics: {
+    dominantTremorHz: number; // Real extracted f0 from sliding window
+    tremorAmplitudeRms: number;
+    spectralConcentration: number;
+    normalizedStability: number;
+    lockStage: "INITIALIZED_60S_CALIB" | "OBSERVING_CONFIRMATION" | "FINALIZED_LOCKED";
+  };
+  sceneOptics: {
+    luminanceMean: number;
+    contrastStd: number;
+    snrDb: number;
+    appliedGamma: number;
+    claheGain: number;
+  };
 }
 
 export interface UserProfile {
