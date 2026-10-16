@@ -154,8 +154,39 @@ function atomicWriteJsonSync(targetPath: string, data: unknown): void {
   const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}.${Math.random()
     .toString(36)
     .slice(2, 7)}`;
-  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
-  fs.renameSync(tmpPath, targetPath);
+  const content = JSON.stringify(data, null, 2);
+  fs.writeFileSync(tmpPath, content, "utf8");
+
+  let renamed = false;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    try {
+      fs.renameSync(tmpPath, targetPath);
+      renamed = true;
+      break;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "EPERM" || code === "EBUSY" || code === "EACCES") {
+        const end = Date.now() + 15;
+        while (Date.now() < end) {}
+      } else {
+        break;
+      }
+    }
+  }
+
+  if (!renamed) {
+    try {
+      fs.copyFileSync(tmpPath, targetPath);
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {}
+    } catch {
+      fs.writeFileSync(targetPath, content, "utf8");
+      try {
+        fs.unlinkSync(tmpPath);
+      } catch {}
+    }
+  }
 }
 
 function saveAdminModel(model: AdminTrainedModelState): void {
