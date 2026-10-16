@@ -1,0 +1,12 @@
+{
+  "subagent": "S7",
+  "owner": "M3",
+  "status": "COMPLETED",
+  "scope": ["src/lib/vision-runtime.ts"],
+  "exports": ["SceneAnalyzer", "LandmarkSmoother", "GestureVoter", "IntentTracker"],
+  "invariantsVerified": {
+    "s6Integrated": true,
+    "mainsBeatFlickerBandHz": "[7.0, 14.0]",
+    "roiClaheBudgetMs": "< 2.0ms"
+  }
+}

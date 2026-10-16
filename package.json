@@ -11,6 +11,7 @@
     "db:seed": "tsx src/db/seed-runner.ts"
   },
   "dependencies": {
+    "@electric-sql/pglite": "^0.5.10",
     "@mediapipe/tasks-vision": "^1.0.1",
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",

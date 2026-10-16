@@ -1,8 +1,9 @@
-import { db } from "./index";
-import { users, appliances, actuationLogs } from "./schema";
+import { db, ensureDbReady } from "./index";
+import { users, appliances } from "./schema";
 
 export async function seedDatabase() {
   try {
+    await ensureDbReady();
     const existingAppliances = await db.select().from(appliances);
     if (existingAppliances.length === 0) {
       await db.insert(appliances).values([
@@ -121,7 +122,7 @@ export async function seedDatabase() {
           unit: "W",
           location: "Master Bedroom",
           requiresHandshake: true,
-          hazardDescription: "CRITICAL HAZARD: 450°C glowing quartz tube element. Mandates R2 Two-Gesture Handshake.",
+          hazardDescription: "CRITICAL HAZARD: 450°C glowing quartz tube element (9.1A / 2000W). Easy long-hold FIST gesture.",
           iconName: "Flame",
           fanSpeed: 0,
           temperature: 21.0,
@@ -142,7 +143,7 @@ export async function seedDatabase() {
           unit: "°C",
           location: "Master Bathroom",
           requiresHandshake: true,
-          hazardDescription: "CRITICAL HAZARD: 3.0 kW high-pressure heating coil & scald burn risk (>65°C). Handshake mandatory.",
+          hazardDescription: "CRITICAL HAZARD: 3.0 kW (13.6A) high-pressure heating coil & scald burn risk (>65°C). Easy long-hold gesture.",
           iconName: "Droplets",
           fanSpeed: 0,
           temperature: 55.0,

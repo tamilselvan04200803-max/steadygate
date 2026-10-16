@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "steadygate"
+version = "2.0.0"
+description = "SteadyGate 2.0: Deterministic Hand-Gesture Safety Gate, Flight Recorder, and Digital Twin"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "websockets>=11.0",
+    "opencv-python-headless>=4.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "httpx>=0.24.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["steadygate*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

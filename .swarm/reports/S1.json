@@ -1,0 +1,12 @@
+{
+  "subagent": "S1",
+  "owner": "M2",
+  "status": "COMPLETED",
+  "scope": ["src/lib/biomechanics/palm-orientation.ts"],
+  "exports": ["computePalmOrientation", "isNaturalSideProfileFreeHand"],
+  "invariantsVerified": {
+    "chiralSignInversion": true,
+    "palmarThreshold": "normalZ < -0.002",
+    "sideProfileExemption": "aspect in (3.6, 6.2] && palmLen >= 0.22 && fourMin >= 0.70 && |x9-x0|/palmLen >= 0.28"
+  }
+}

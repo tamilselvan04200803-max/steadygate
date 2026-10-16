@@ -1,0 +1,301 @@
+{
+  "seed": 1,
+  "runs_n": 200,
+  "n_runs": 200,
+  "n_frames_evaluated": 8235,
+  "exposure_duration_sec": 411.75,
+  "n_positive_runs": 68,
+  "n_negative_runs": 132,
+  "level_1_perturbations": [
+    "frame_drop",
+    "label_flicker",
+    "score_noise",
+    "timestamp_jitter",
+    "latency_spike",
+    "landmark_dropout",
+    "hand_loss_burst",
+    "duplicate_frames"
+  ],
+  "level_1_proxy_disclosure": "Level-1 telemetry perturbations (frame_drop, label_flicker, score_noise, timestamp_jitter, latency_spike, landmark_dropout, hand_loss_burst, duplicate_frames) are deterministic proxies for physical hand occlusion, ambient lighting shifts, and motion blur.",
+  "feedback_mode": "simulated",
+  "matrix": {
+    "naive_single_frame": {
+      "tp": 68,
+      "fp": 132,
+      "fn": 0,
+      "tn": 0,
+      "intended_command_success_count": 68,
+      "unintended_command_count": 132,
+      "duplicate_command_count": 0,
+      "wrong_action_command_count": 132,
+      "missed_intended_command_count": 0,
+      "false_activation_rate_pct": 100.0,
+      "true_commit_rate_pct": 100.0,
+      "overall_accuracy_pct": 34.0,
+      "mean_commit_latency_ms": 142.5,
+      "median_completion_time_ms": 150.0,
+      "exposure_duration_sec": 411.75,
+      "illustrative_zero_event_upper_bound": null,
+      "positive_commands": {
+        "n": 68,
+        "commits": 68,
+        "clean_rate_pct": 100.0
+      },
+      "negative_controls": {
+        "n": 33,
+        "false_actuations": 33
+      },
+      "degraded_heater_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "distracted_face_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "defective_actuator_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      }
+    },
+    "steadygate_1_0": {
+      "tp": 68,
+      "fp": 99,
+      "fn": 0,
+      "tn": 33,
+      "intended_command_success_count": 68,
+      "unintended_command_count": 99,
+      "duplicate_command_count": 0,
+      "wrong_action_command_count": 99,
+      "missed_intended_command_count": 0,
+      "false_activation_rate_pct": 75.0,
+      "true_commit_rate_pct": 100.0,
+      "overall_accuracy_pct": 50.5,
+      "mean_commit_latency_ms": 2028.44,
+      "median_completion_time_ms": 1900.0,
+      "exposure_duration_sec": 411.75,
+      "illustrative_zero_event_upper_bound": null,
+      "positive_commands": {
+        "n": 68,
+        "commits": 68,
+        "clean_rate_pct": 100.0
+      },
+      "negative_controls": {
+        "n": 33,
+        "false_actuations": 0
+      },
+      "degraded_heater_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "distracted_face_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "defective_actuator_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      }
+    },
+    "steadygate_2_0": {
+      "tp": 68,
+      "fp": 0,
+      "fn": 0,
+      "tn": 132,
+      "intended_command_success_count": 68,
+      "unintended_command_count": 0,
+      "duplicate_command_count": 0,
+      "wrong_action_command_count": 0,
+      "missed_intended_command_count": 0,
+      "false_activation_rate_pct": 0.0,
+      "true_commit_rate_pct": 100.0,
+      "overall_accuracy_pct": 100.0,
+      "mean_commit_latency_ms": 1950.0,
+      "median_completion_time_ms": 1950.0,
+      "exposure_duration_sec": 411.75,
+      "illustrative_zero_event_upper_bound": 0.0227,
+      "positive_commands": {
+        "n": 68,
+        "commits": 68,
+        "clean_rate_pct": 100.0
+      },
+      "negative_controls": {
+        "n": 33,
+        "false_actuations": 0
+      },
+      "degraded_heater_attempts": {
+        "n": 33,
+        "commits": 0,
+        "blocked": 33
+      },
+      "distracted_face_attempts": {
+        "n": 33,
+        "commits": 0,
+        "blocked": 33
+      },
+      "defective_actuator_attempts": {
+        "n": 33,
+        "commits": 0,
+        "blocked": 33
+      },
+      "reason_code_counts": {
+        "HOLD_TOO_SHORT": 4039,
+        "NOT_RELEASED": 507,
+        "UNKNOWN_GESTURE": 2855,
+        "HEALTH_LOCKED": 66,
+        "HEALTH_STRICT": 33,
+        "OUTSIDE_ZONE": 330,
+        "LOW_SCORE": 295,
+        "USER_DISTRACTED": 66,
+        "DEVICE_FAULT_LOCK": 33,
+        "TARGET_CHANGED": 11
+      }
+    }
+  },
+  "pipelines": {
+    "naive_single_frame": {
+      "tp": 68,
+      "fp": 132,
+      "fn": 0,
+      "tn": 0,
+      "intended_command_success_count": 68,
+      "unintended_command_count": 132,
+      "duplicate_command_count": 0,
+      "wrong_action_command_count": 132,
+      "missed_intended_command_count": 0,
+      "false_activation_rate_pct": 100.0,
+      "true_commit_rate_pct": 100.0,
+      "overall_accuracy_pct": 34.0,
+      "mean_commit_latency_ms": 142.5,
+      "median_completion_time_ms": 150.0,
+      "exposure_duration_sec": 411.75,
+      "illustrative_zero_event_upper_bound": null,
+      "positive_commands": {
+        "n": 68,
+        "commits": 68,
+        "clean_rate_pct": 100.0
+      },
+      "negative_controls": {
+        "n": 33,
+        "false_actuations": 33
+      },
+      "degraded_heater_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "distracted_face_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "defective_actuator_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      }
+    },
+    "policy_1_0": {
+      "tp": 68,
+      "fp": 99,
+      "fn": 0,
+      "tn": 33,
+      "intended_command_success_count": 68,
+      "unintended_command_count": 99,
+      "duplicate_command_count": 0,
+      "wrong_action_command_count": 99,
+      "missed_intended_command_count": 0,
+      "false_activation_rate_pct": 75.0,
+      "true_commit_rate_pct": 100.0,
+      "overall_accuracy_pct": 50.5,
+      "mean_commit_latency_ms": 2028.44,
+      "median_completion_time_ms": 1900.0,
+      "exposure_duration_sec": 411.75,
+      "illustrative_zero_event_upper_bound": null,
+      "positive_commands": {
+        "n": 68,
+        "commits": 68,
+        "clean_rate_pct": 100.0
+      },
+      "negative_controls": {
+        "n": 33,
+        "false_actuations": 0
+      },
+      "degraded_heater_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "distracted_face_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      },
+      "defective_actuator_attempts": {
+        "n": 33,
+        "commits": 33,
+        "blocked": 0
+      }
+    },
+    "policy_2_0_adaptive": {
+      "tp": 68,
+      "fp": 0,
+      "fn": 0,
+      "tn": 132,
+      "intended_command_success_count": 68,
+      "unintended_command_count": 0,
+      "duplicate_command_count": 0,
+      "wrong_action_command_count": 0,
+      "missed_intended_command_count": 0,
+      "false_activation_rate_pct": 0.0,
+      "true_commit_rate_pct": 100.0,
+      "overall_accuracy_pct": 100.0,
+      "mean_commit_latency_ms": 1950.0,
+      "median_completion_time_ms": 1950.0,
+      "exposure_duration_sec": 411.75,
+      "illustrative_zero_event_upper_bound": 0.0227,
+      "positive_commands": {
+        "n": 68,
+        "commits": 68,
+        "clean_rate_pct": 100.0
+      },
+      "negative_controls": {
+        "n": 33,
+        "false_actuations": 0
+      },
+      "degraded_heater_attempts": {
+        "n": 33,
+        "commits": 0,
+        "blocked": 33
+      },
+      "distracted_face_attempts": {
+        "n": 33,
+        "commits": 0,
+        "blocked": 33
+      },
+      "defective_actuator_attempts": {
+        "n": 33,
+        "commits": 0,
+        "blocked": 33
+      },
+      "reason_code_counts": {
+        "HOLD_TOO_SHORT": 4039,
+        "NOT_RELEASED": 507,
+        "UNKNOWN_GESTURE": 2855,
+        "HEALTH_LOCKED": 66,
+        "HEALTH_STRICT": 33,
+        "OUTSIDE_ZONE": 330,
+        "LOW_SCORE": 295,
+        "USER_DISTRACTED": 66,
+        "DEVICE_FAULT_LOCK": 33,
+        "TARGET_CHANGED": 11
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "subagent": "S9",
+  "owner": "M3",
+  "status": "COMPLETED",
+  "scope": ["src/lib/policy/safety-chord-engine.ts"],
+  "exports": ["ActuatorCircuitBreaker", "resolveApplianceRiskTier", "SafetyChordEngine"],
+  "invariantsVerified": {
+    "tier1HoldMs": 350,
+    "tier2HoldMs": 600,
+    "tier3TwoStepChord": "OPEN_PALM (350ms) -> FIST within 2500ms -> Hold 1500ms",
+    "circuitBreakerFaultThreshold": 3
+  }
+}

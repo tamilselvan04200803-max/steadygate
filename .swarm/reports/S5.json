@@ -1,0 +1,20 @@
+{
+  "subagent": "S5",
+  "owner": "M2",
+  "status": "COMPLETED",
+  "scope": ["src/lib/hand-gesture-engine.ts"],
+  "exports": [
+    "computeBoneRatioSignature",
+    "verifyUserHandBiometrics",
+    "classifyHandGesture",
+    "detectObjectGrasp",
+    "extractHandParameters"
+  ],
+  "invariantsVerified": {
+    "s1Integrated": true,
+    "s2Integrated": true,
+    "s3Integrated": true,
+    "caregiverJumpThresholdNorm": 0.25,
+    "caregiverBoneRatioDeviationPct": 18.0
+  }
+}

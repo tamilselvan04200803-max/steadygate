@@ -1,14 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["@electric-sql/pglite"],
+  allowedDevOrigins: ["*.e2b.app", "localhost", "127.0.0.1"],
   headers: async () => [
-    {
-      source: "/(.*)",
-      headers: [
-        { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
-        { key: "Cross-Origin-Embedder-Policy", value: "credentialless" },
-      ],
-    },
     {
       source: "/vision/:path*",
       headers: [

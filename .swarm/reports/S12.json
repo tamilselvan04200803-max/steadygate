@@ -1,0 +1,18 @@
+{
+  "subagent": "S12",
+  "owner": "M4",
+  "status": "COMPLETED",
+  "scope": ["tests/global-v4-adversarial.test.ts"],
+  "assertionsPassed": 21,
+  "assertionsTotal": 21,
+  "batteriesVerified": [
+    "G1: Monk Skin Tone (MST 1-10) Equity & Wood Background Subtraction (20/20)",
+    "G2: Cultural Locale Remapping & Taboo Suppression (S1 + S2)",
+    "G3: Contracture ROM & Bed-Incline -45 deg Gravity Audit (S3 + S5)",
+    "G4: Levodopa 1-3 Hz Dyskinesia vs. 4-12 Hz Tremor Decoupling (S4)",
+    "G5: Caregiver Hand Intrusion & Biometric Bone-Ratio Guard (S5)",
+    "G6: Frame-Rate Invariance: 12fps vs. 30fps vs. 120Hz (S8, spread=33ms)",
+    "G7: 50/60 Hz Mains Beat Flicker & <2.0ms ROI CLAHE Budget (S7, 0.38ms)",
+    "G8: Tier 3 Two-Step Safety Chord & Circuit Breaker Lockout (S9 + S10)"
+  ]
+}

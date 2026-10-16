@@ -1,0 +1,12 @@
+{
+  "subagent": "S11",
+  "owner": "M3",
+  "status": "COMPLETED",
+  "scope": ["src/app/api/admin-train/route.ts", "src/components/AdminGestureTrainer.tsx"],
+  "exports": ["export_fhir_report"],
+  "invariantsVerified": {
+    "fhirStandard": "HL7 FHIR R4 Bundle (Observation)",
+    "zeroRawPixelsPii": true,
+    "loincTremorFrequencyCode": "80316-3"
+  }
+}

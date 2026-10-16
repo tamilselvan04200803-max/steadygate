@@ -1,0 +1,15 @@
+{
+  "gatekeeper": "M4",
+  "verdict": "APPROVED",
+  "timestamp": "2026-10-16T00:00:00.000Z",
+  "suites": {
+    "tscNoEmit": { "exitCode": 0, "errors": 0 },
+    "gestureRobustness": { "passed": 26, "failed": 0, "hagridAccuracyPct": 97.4, "objectGraspFpPct": 0.0 },
+    "adversarialChallenger1": { "passed": 18, "failed": 0 },
+    "adversarialChallenger2": { "passed": 70, "failed": 0 },
+    "globalV4Adversarial": { "passed": 21, "failed": 0, "batteries": 8 },
+    "pytestSuite": { "passed": 26, "failed": 0 }
+  },
+  "totalAssertionsPassed": 161,
+  "totalAssertionsFailed": 0
+}

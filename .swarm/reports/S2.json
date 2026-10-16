@@ -1,0 +1,13 @@
+{
+  "subagent": "S2",
+  "owner": "M2",
+  "status": "COMPLETED",
+  "scope": ["src/lib/locales/gesture-packs.ts", "storage/locale_gesture_packs.json"],
+  "exports": ["LOCALE_GESTURE_PACKS", "getLocaleGesturePack", "resolveLocaleGesture"],
+  "invariantsVerified": {
+    "IR_IQ_AF_NG_GR_thumbsUpRestricted": true,
+    "BR_DE_TR_pinchRestricted": true,
+    "GB_IE_AU_NZ_dorsalVictoryBlocked": true,
+    "GR_palmarMoutzaRemappedToFourFingers": true
+  }
+}

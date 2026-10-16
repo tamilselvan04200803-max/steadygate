@@ -1,0 +1,80 @@
+[
+  {
+    "id": "adm_1792126478456_tig5",
+    "timestamp": "2026-10-16T04:54:38.456Z",
+    "adminLabel": "BOOK_HOLD_NEGATIVE",
+    "predictedBefore": "UNKNOWN",
+    "fingerFlexion": [
+      0.519,
+      0.291,
+      0.37,
+      0.434,
+      0.534
+    ],
+    "palmLength": 0.2,
+    "aspectRatio": 1.4,
+    "cApertureRatio": 1.07,
+    "d4_9Ratio": 0.58,
+    "luminance": 0.12,
+    "contrast": 0.08,
+    "clutter": 0.35,
+    "gamma": 1,
+    "lightingCondition": "LOW_LIGHT_DARK",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.035,
+    "source": "LIVE_ADMIN_VIDEO",
+    "notes": "Admin verification: holding book spine in low light"
+  },
+  {
+    "id": "adm_1792126478457_f2u3",
+    "timestamp": "2026-10-16T04:54:38.457Z",
+    "adminLabel": "BOOK_HOLD_NEGATIVE",
+    "predictedBefore": "UNKNOWN",
+    "fingerFlexion": [
+      0.519,
+      0.291,
+      0.37,
+      0.434,
+      0.534
+    ],
+    "palmLength": 0.2,
+    "aspectRatio": 1.4,
+    "cApertureRatio": 1.07,
+    "d4_9Ratio": 0.58,
+    "luminance": 0.12,
+    "contrast": 0.08,
+    "clutter": 0.35,
+    "gamma": 1,
+    "lightingCondition": "LOW_LIGHT_DARK",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.035,
+    "source": "LIVE_ADMIN_VIDEO",
+    "notes": "Admin verification: holding book spine in low light"
+  },
+  {
+    "id": "adm_1792126478457_4qx6",
+    "timestamp": "2026-10-16T04:54:38.457Z",
+    "adminLabel": "BOOK_HOLD_NEGATIVE",
+    "predictedBefore": "UNKNOWN",
+    "fingerFlexion": [
+      0.519,
+      0.291,
+      0.37,
+      0.434,
+      0.534
+    ],
+    "palmLength": 0.2,
+    "aspectRatio": 1.4,
+    "cApertureRatio": 1.07,
+    "d4_9Ratio": 0.58,
+    "luminance": 0.12,
+    "contrast": 0.08,
+    "clutter": 0.35,
+    "gamma": 1,
+    "lightingCondition": "LOW_LIGHT_DARK",
+    "tremorHz": 5.2,
+    "tremorAmp": 0.035,
+    "source": "LIVE_ADMIN_VIDEO",
+    "notes": "Admin verification: holding book spine in low light"
+  }
+]

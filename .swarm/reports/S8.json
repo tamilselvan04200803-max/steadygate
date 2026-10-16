@@ -1,0 +1,13 @@
+{
+  "subagent": "S8",
+  "owner": "M3",
+  "status": "COMPLETED",
+  "scope": ["src/lib/voter/time-weighted-voter.ts", "src/components/LiveCameraStream.tsx"],
+  "exports": ["TimeWeightedGestureVoter"],
+  "invariantsVerified": {
+    "windowMs": 350,
+    "commitTimeRatio": 0.6,
+    "releaseTimeRatio": 0.35,
+    "fpsInvarianceRange": "12fps to 120Hz"
+  }
+}

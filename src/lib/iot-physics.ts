@@ -25,9 +25,9 @@ export function fanTelemetry(speed: number): {
   return {
     fanSpeed,
     powerState: "ON",
-    airRpm: 420 + fanSpeed * 260,
-    airflowCfm: 130 + fanSpeed * 75,
-    activeWattage: 12 + fanSpeed * 11,
+    airRpm: Math.round(420 + fanSpeed * 260),
+    airflowCfm: Math.round(130 + fanSpeed * 75),
+    activeWattage: Math.round(12 + fanSpeed * 11),
     targetValue: fanSpeed,
   };
 }
@@ -44,12 +44,13 @@ export function acTelemetry(
   airRpm: number;
   airflowCfm: number;
 } {
-  const temp = Math.max(18, Math.min(26, temperature));
+  const temp = Math.max(18, Math.min(26, Number(temperature) || 22));
+  const targetVal = Math.round(temp);
   if (!powerOn) {
     return {
       powerState: "OFF",
       temperature: temp,
-      targetValue: temp,
+      targetValue: targetVal,
       activeWattage: 0,
       fanSpeed: 0,
       airRpm: 0,
@@ -59,8 +60,8 @@ export function acTelemetry(
   return {
     powerState: "ON",
     temperature: temp,
-    targetValue: temp,
-    activeWattage: 1000 + (26 - temp) * 120,
+    targetValue: targetVal,
+    activeWattage: Math.round(1000 + (26 - temp) * 120),
     fanSpeed: 3,
     airRpm: 1250,
     airflowCfm: 410,
@@ -79,7 +80,7 @@ export function lampTelemetry(
   if (!powerOn) {
     return { powerState: "OFF", brightness: 0, activeWattage: 0, targetValue: 0 };
   }
-  const b = Math.max(10, Math.min(100, brightness));
+  const b = Math.round(Math.max(10, Math.min(100, Number(brightness) || 80)));
   return {
     powerState: "ON",
     brightness: b,
@@ -95,7 +96,7 @@ export function heaterTelemetry(powerOn: boolean): {
 } {
   return powerOn
     ? { powerState: "ON", activeWattage: 2000, targetValue: 2000 }
-    : { powerState: "OFF", activeWattage: 0, targetValue: 2000 };
+    : { powerState: "OFF", activeWattage: 0, targetValue: 0 };
 }
 
 export function geyserTelemetry(powerOn: boolean, temperature = 65): {
@@ -104,18 +105,21 @@ export function geyserTelemetry(powerOn: boolean, temperature = 65): {
   activeWattage: number;
   targetValue: number;
 } {
+  const rawTemp = Number(temperature) || 65;
+  const activeTemp = rawTemp >= 45 ? rawTemp : 65;
+  const targetInt = Math.round(activeTemp);
   return powerOn
     ? {
         powerState: "ON",
-        temperature,
+        temperature: activeTemp,
         activeWattage: 3000,
-        targetValue: temperature,
+        targetValue: targetInt,
       }
     : {
         powerState: "OFF",
         temperature: 38.5,
         activeWattage: 0,
-        targetValue: temperature,
+        targetValue: 0,
       };
 }
 

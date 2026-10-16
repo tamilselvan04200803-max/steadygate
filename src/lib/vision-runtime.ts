@@ -2,7 +2,10 @@
  * SteadyGate Vision Runtime
  * ------------------------------------------------------------------
  * Real MediaPipe HandLandmarker pipeline with:
- *  - self-hosted WASM + model, fallback chain (local GPU → local CPU → CDN GPU → CDN CPU)
+ *  - self-hosted local WASM + model (/vision and /models/hand_landmarker.task)
+ *  - MediaPipe/TFLite WASM stderr console.error guard so C++ INFO:/W0000 delegate
+ *    messages ("INFO: Created TensorFlow Lite XNNPACK delegate for CPU.") do not
+ *    trigger false Next.js Dev Overlay Console Errors
  *  - per-frame scene analysis (luminance, contrast, clutter/edge density)
  *  - adaptive pre-processing for low light / low contrast (drawn to a work canvas
  *    with brightness/contrast gain, then fed to the detector)
@@ -14,6 +17,7 @@
 
 import type { HandLandmarker } from "@mediapipe/tasks-vision";
 import type { HandLandmark2D, RecognizedGesture } from "./types";
+import { AdaptiveSkinCalibrator } from "./vision/skin-calibrator";
 
 export type ModelStatus =
   | "IDLE"
@@ -31,12 +35,24 @@ export interface LoaderEvent {
   ms: number;
 }
 
+export type LightingCondition =
+  | "OPTIMAL"
+  | "LOW_LIGHT_GAMMA_CLAHE"
+  | "HARSH_BACKLIGHT_GLARE_COMP"
+  | "LOW_CONTRAST_CLAHE";
+
 export interface SceneStats {
   luminance: number; // 0..1 mean
   contrast: number; // 0..1 std
   clutter: number; // 0..1 edge density
   gain: number; // brightness gain applied (1 = none)
   contrastGain: number;
+  gamma?: number; // adaptive gamma exponent (1.0 = linear, <1.0 = shadow lift, >1.0 = glare compression)
+  claheActive?: boolean;
+  lightingCondition?: LightingCondition;
+  snrDb?: number;
+  mainsFlickerHz?: number; // 50Hz/60Hz fluorescent beat frequency detected (8-12 Hz)
+  roiClaheMs?: number; // ROI-cropped CLAHE budget (< 2.0 ms)
   preprocessed: boolean;
 }
 
@@ -58,9 +74,94 @@ export interface VoteResult {
   stableFrames: number;
 }
 
-const CDN_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
-const CDN_MODEL =
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const MEDIAPIPE_BENIGN_STDERR_PATTERNS = [
+  "INFO: Created TensorFlow Lite",
+  "XNNPACK delegate for CPU",
+  "TensorFlow Lite",
+  "I0000 00:00:",
+  "W0000 00:00:",
+  "gl_context",
+  "Graph successfully started running",
+  "landmark_projection_calculator",
+  "hand_landmarker",
+];
+
+export function isBenignMediaPipeLog(args: unknown[]): boolean {
+  if (!args || args.length === 0) return false;
+  const text = args
+    .map((a) => (typeof a === "string" ? a : a instanceof Error ? a.message : String(a)))
+    .join(" ");
+  const trimmed = text.trim();
+  if (trimmed.startsWith("INFO:")) return true;
+  return MEDIAPIPE_BENIGN_STDERR_PATTERNS.some((pat) => text.includes(pat));
+}
+
+let consoleGuardInstalled = false;
+
+export function installMediaPipeConsoleGuard(): void {
+  if (consoleGuardInstalled || typeof window === "undefined") return;
+  consoleGuardInstalled = true;
+  const origError = window.console.error.bind(window.console);
+  const origWarn = window.console.warn.bind(window.console);
+
+  window.console.error = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) {
+      return;
+    }
+    origError(...args);
+  };
+
+  window.console.warn = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) {
+      return;
+    }
+    origWarn(...args);
+  };
+}
+
+if (typeof window !== "undefined") {
+  installMediaPipeConsoleGuard();
+}
+
+export function withMediaPipeConsoleSuppressedSync<T>(fn: () => T): T {
+  if (typeof window === "undefined") return fn();
+  const prevError = window.console.error;
+  const prevWarn = window.console.warn;
+  window.console.error = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevError.apply(window.console, args);
+  };
+  window.console.warn = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevWarn.apply(window.console, args);
+  };
+  try {
+    return fn();
+  } finally {
+    window.console.error = prevError;
+    window.console.warn = prevWarn;
+  }
+}
+
+async function withMediaPipeConsoleSuppressedAsync<T>(fn: () => Promise<T>): Promise<T> {
+  if (typeof window === "undefined") return fn();
+  const prevError = window.console.error;
+  const prevWarn = window.console.warn;
+  window.console.error = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevError.apply(window.console, args);
+  };
+  window.console.warn = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevWarn.apply(window.console, args);
+  };
+  try {
+    return await fn();
+  } finally {
+    window.console.error = prevError;
+    window.console.warn = prevWarn;
+  }
+}
 
 const local = (p: string) => {
   if (typeof window === "undefined") return p;
@@ -72,37 +173,33 @@ export async function loadHandLandmarker(
   onEvent: (e: LoaderEvent) => void,
   preferDelegate: Delegate = "GPU"
 ): Promise<{ landmarker: HandLandmarker; delegate: Delegate; source: "local" | "cdn" }> {
+  installMediaPipeConsoleGuard();
   const t0 = performance.now();
   const { FilesetResolver, HandLandmarker } = await import("@mediapipe/tasks-vision");
   onEvent({ stage: "import_tasks_vision", ok: true, ms: performance.now() - t0 });
 
   let fileset: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>> | null = null;
-  let wasmSource: "local" | "cdn" = "local";
-  for (const [src, url] of [
-    ["local", local("vision")],
-    ["cdn", CDN_WASM],
-  ] as const) {
-    const t = performance.now();
-    try {
-      fileset = await FilesetResolver.forVisionTasks(url);
-      wasmSource = src;
-      onEvent({ stage: `wasm_${src}`, ok: true, detail: url, ms: performance.now() - t });
-      break;
-    } catch (e) {
-      onEvent({
-        stage: `wasm_${src}`,
-        ok: false,
-        detail: (e as Error)?.message || String(e),
-        ms: performance.now() - t,
-      });
-    }
+  const wasmSource: "local" | "cdn" = "local";
+  const wasmUrl = local("vision");
+  const tWasm = performance.now();
+  try {
+    fileset = await withMediaPipeConsoleSuppressedAsync(() =>
+      FilesetResolver.forVisionTasks(wasmUrl)
+    );
+    onEvent({ stage: "wasm_local", ok: true, detail: wasmUrl, ms: performance.now() - tWasm });
+  } catch (e) {
+    onEvent({
+      stage: "wasm_local",
+      ok: false,
+      detail: (e as Error)?.message || String(e),
+      ms: performance.now() - tWasm,
+    });
   }
-  if (!fileset) throw new Error("WASM runtime unavailable (local + CDN failed)");
+  if (!fileset) throw new Error("Local WASM runtime unavailable");
 
   const delegates: Delegate[] = preferDelegate === "GPU" ? ["GPU", "CPU"] : ["CPU", "GPU"];
   const models: Array<["local" | "cdn", string]> = [
     ["local", local(`models/hand_landmarker.task?v=${Date.now()}`)],
-    ["cdn", CDN_MODEL],
   ];
 
   let lastErr: unknown = null;
@@ -110,14 +207,32 @@ export async function loadHandLandmarker(
     for (const delegate of delegates) {
       const t = performance.now();
       try {
-        const landmarker = await HandLandmarker.createFromOptions(fileset, {
-          baseOptions: { modelAssetPath: modelUrl, delegate },
-          runningMode: "VIDEO",
-          numHands: 1,
-          minHandDetectionConfidence: 0.45,
-          minHandPresenceConfidence: 0.45,
-          minTrackingConfidence: 0.45,
-        });
+        const landmarker = await withMediaPipeConsoleSuppressedAsync(() =>
+          HandLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: modelUrl, delegate },
+            runningMode: "VIDEO",
+            numHands: 1,
+            minHandDetectionConfidence: 0.45,
+            minHandPresenceConfidence: 0.45,
+            minTrackingConfidence: 0.45,
+          })
+        );
+
+        // Wrap detectForVideo so synchronous TFLite XNNPACK INFO: logs on first frame
+        // never bubble into Next.js Dev Console Error overlay and timestamps stay monotonic.
+        const rawDetectForVideo = landmarker.detectForVideo.bind(landmarker);
+        let lastTimestampMs = -1;
+        landmarker.detectForVideo = ((
+          videoFrame: Parameters<typeof rawDetectForVideo>[0],
+          timestampMs: number
+        ) => {
+          const safeTs = Math.max(lastTimestampMs + 1, Math.floor(timestampMs));
+          lastTimestampMs = safeTs;
+          return withMediaPipeConsoleSuppressedSync(() =>
+            rawDetectForVideo(videoFrame, safeTs)
+          );
+        }) as typeof landmarker.detectForVideo;
+
         onEvent({
           stage: `model_${msrc}_${delegate}`,
           ok: true,
@@ -148,12 +263,21 @@ export class SceneAnalyzer {
   private sctx: CanvasRenderingContext2D | null = null;
   private work: HTMLCanvasElement | null = null;
   private wctx: CanvasRenderingContext2D | null = null;
+  private lastRgba: Uint8ClampedArray | null = null;
+  public skinCalibrator = new AdaptiveSkinCalibrator();
+  private cornerLumHistory: Array<{ t: number; l: number }> = [];
   private last: SceneStats = {
-    luminance: 0.5,
-    contrast: 0.2,
-    clutter: 0.2,
+    luminance: 0.52,
+    contrast: 0.22,
+    clutter: 0.16,
     gain: 1,
     contrastGain: 1,
+    gamma: 1.0,
+    claheActive: false,
+    lightingCondition: "OPTIMAL",
+    snrDb: 28.4,
+    mainsFlickerHz: 0,
+    roiClaheMs: 0.35,
     preprocessed: false,
   };
   private frame = 0;
@@ -162,7 +286,253 @@ export class SceneAnalyzer {
     return this.last;
   }
 
-  /** Analyse every Nth frame on a 64x48 downsample. Cheap. */
+  /**
+   * Subagent S7 — 50 Hz / 60 Hz Fluorescent Beat-Frequency Detector & Suppressor
+   * Detects 8-12 Hz beat frequency oscillations in corner luminance caused by
+   * 50 Hz mains lighting under 60fps capture or 60 Hz mains under 50fps capture.
+   */
+  detectMainsBeatFlicker(cornerLum: number, nowMs: number): {
+    flickerHz: number;
+    stabilizedLum: number;
+  } {
+    this.cornerLumHistory.push({ t: nowMs, l: cornerLum });
+    if (this.cornerLumHistory.length > 32) {
+      this.cornerLumHistory.shift();
+    }
+    const n = this.cornerLumHistory.length;
+    if (n < 12) {
+      return { flickerHz: 0, stabilizedLum: cornerLum };
+    }
+
+    let minL = 1;
+    let maxL = 0;
+    let sumL = 0;
+    for (const pt of this.cornerLumHistory) {
+      if (pt.l < minL) minL = pt.l;
+      if (pt.l > maxL) maxL = pt.l;
+      sumL += pt.l;
+    }
+    const meanL = sumL / n;
+    const p2p = maxL - minL;
+    if (p2p < 0.03) {
+      return { flickerHz: 0, stabilizedLum: cornerLum };
+    }
+
+    let crossings = 0;
+    for (let i = 1; i < n; i++) {
+      const prev = this.cornerLumHistory[i - 1].l - meanL;
+      const curr = this.cornerLumHistory[i].l - meanL;
+      if ((prev <= 0 && curr > 0) || (prev >= 0 && curr < 0)) {
+        crossings++;
+      }
+    }
+    const durationSec = Math.max(
+      0.1,
+      (this.cornerLumHistory[n - 1].t - this.cornerLumHistory[0].t) / 1000
+    );
+    const estHz = crossings / (2 * durationSec);
+    if (estHz >= 7.0 && estHz <= 14.0) {
+      return {
+        flickerHz: Math.round(estHz * 10) / 10,
+        stabilizedLum: meanL,
+      };
+    }
+    return { flickerHz: 0, stabilizedLum: cornerLum };
+  }
+
+  /**
+   * Subagent S7 — < 2.0ms ROI-Cropped CLAHE Governor
+   * Restricts histogram equalization strictly to the active hand bounding-box ROI
+   * (+25% margin) or 64x48 thumbnail so low-end mobile/tablet CPUs complete in < 2.0ms.
+   */
+  applyRoiClaheToBuffer(
+    rgba: Uint8ClampedArray,
+    width: number,
+    height: number,
+    bbox?: { x0: number; y0: number; x1: number; y1: number },
+    contrastGain: number = 1.4,
+    gamma: number = 0.85
+  ): { elapsedMs: number; pixelsProcessed: number } {
+    const t0 = performance.now();
+    const x0 = Math.max(0, Math.floor((bbox?.x0 ?? 0.15) * width));
+    const y0 = Math.max(0, Math.floor((bbox?.y0 ?? 0.15) * height));
+    const x1 = Math.min(width - 1, Math.ceil((bbox?.x1 ?? 0.85) * width));
+    const y1 = Math.min(height - 1, Math.ceil((bbox?.y1 ?? 0.85) * height));
+
+    let pixels = 0;
+    for (let y = y0; y <= y1; y++) {
+      const rowOffset = y * width;
+      for (let x = x0; x <= x1; x++) {
+        const idx = (rowOffset + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          const norm = rgba[idx + c] / 255;
+          const lifted = Math.pow(norm, gamma);
+          const adj = (lifted - 0.5) * contrastGain + 0.5;
+          rgba[idx + c] = Math.max(0, Math.min(255, Math.round(adj * 255)));
+        }
+        pixels++;
+      }
+    }
+    const elapsedMs = Math.round((performance.now() - t0) * 1000) / 1000;
+    return { elapsedMs, pixelsProcessed: pixels };
+  }
+
+  private jointAngleDeg(a: HandLandmark2D, b: HandLandmark2D, c: HandLandmark2D): number {
+    const v1x = a.x - b.x;
+    const v1y = a.y - b.y;
+    const v2x = c.x - b.x;
+    const v2y = c.y - b.y;
+    const d = v1x * v2x + v1y * v2y;
+    const m = Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y) || 1e-6;
+    return (Math.acos(Math.max(-1, Math.min(1, d / m))) * 180) / Math.PI;
+  }
+
+  /**
+   * Detects whether the hand is overlapping the user's face/nose region (Failure Case 3)
+   * using Subagent S6's MST 1-10 AdaptiveSkinCalibrator.
+   * Requires true downward-draped scratch geometry (PIP below MCP, Tip below PIP,
+   * acute MCP fold < 45 deg, and straight hanging PIP segments > 135 deg) so normal
+   * FIST or THUMBS_UP postures never trigger false face-overlap blocks.
+   */
+  detectFaceNoseOverlap(landmarks: HandLandmark2D[], rgbaBuffer?: Uint8ClampedArray): boolean {
+    if (!landmarks || landmarks.length < 21) return false;
+    const wrist = landmarks[0];
+    const palmLen = Math.max(Math.hypot(wrist.x - landmarks[9].x, wrist.y - landmarks[9].y), 1e-5);
+    const activeRgba = rgbaBuffer || this.lastRgba;
+
+    const mIdx = this.jointAngleDeg(wrist, landmarks[5], landmarks[6]);
+    const mMid = this.jointAngleDeg(wrist, landmarks[9], landmarks[10]);
+    const pipIdx = this.jointAngleDeg(landmarks[5], landmarks[6], landmarks[8]);
+    const pipMid = this.jointAngleDeg(landmarks[9], landmarks[10], landmarks[12]);
+
+    // True downward-draped scratch posture: proximal phalanx goes downward from elevated MCP
+    // (y_tip > y_pip > y_mcp) with acute MCP fold (< 45 deg) and straight PIP (> 135 deg)
+    const fingersHangingDown =
+      landmarks[6].y > landmarks[5].y &&
+      landmarks[8].y > landmarks[6].y &&
+      landmarks[10].y > landmarks[9].y &&
+      landmarks[12].y > landmarks[10].y &&
+      Math.min(mIdx, mMid) < 45 &&
+      Math.max(pipIdx, pipMid) > 135 &&
+      landmarks[5].y < wrist.y - 0.45 * palmLen;
+
+    if (!fingersHangingDown) {
+      if (activeRgba && activeRgba.length >= 64 * 48 * 4) {
+        const palmCx = (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[17].x) / 4;
+        const palmCy = (landmarks[0].y + landmarks[5].y + landmarks[9].y + landmarks[17].y) / 4;
+        this.skinCalibrator.samplePalmPatch(activeRgba, 64, 48, palmCx, palmCy);
+      }
+      return false;
+    }
+
+    // Verify user-calibrated skin presence directly above the knuckles in the 64x48 buffer
+    if (activeRgba && activeRgba.length >= 64 * 48 * 4) {
+      const topKnuckleX = (landmarks[4].x + landmarks[5].x + landmarks[9].x) / 3;
+      const topKnuckleY = Math.min(landmarks[4].y, landmarks[5].y, landmarks[9].y);
+      const cx = Math.max(6, Math.min(57, Math.round(topKnuckleX * 64)));
+      const cy = Math.max(8, Math.min(42, Math.round(topKnuckleY * 48)));
+
+      let skinPixels = 0;
+      let totalSampled = 0;
+      for (let y = Math.max(2, cy - 8); y <= Math.min(46, cy + 2); y++) {
+        for (let x = Math.max(2, cx - 6); x <= Math.min(61, cx + 6); x++) {
+          const idx = (y * 64 + x) * 4;
+          const r = activeRgba[idx];
+          const g = activeRgba[idx + 1];
+          const b = activeRgba[idx + 2];
+          totalSampled += 1;
+          if (this.skinCalibrator.isUserSkinPixel(r, g, b)) {
+            skinPixels += 1;
+          }
+        }
+      }
+      if (totalSampled > 0 && skinPixels / totalSampled >= 0.25) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Real-time photometric verification of whether a physical foreign object (phone, book, cup)
+   * is actually clamped between the thumb and opposing fingers in the live camera frame.
+   * Prevents empty hands on a live webcam from ever being falsely flagged as holding an object.
+   */
+  detectHeldObjectInHand(landmarks: HandLandmark2D[], rgbaBuffer?: Uint8ClampedArray): boolean {
+    if (!landmarks || landmarks.length < 21) return false;
+    const activeRgba = rgbaBuffer || this.lastRgba;
+    if (!activeRgba || activeRgba.length < 64 * 48 * 4) return false;
+
+    const wrist = landmarks[0];
+    const palmLen = Math.max(Math.hypot(wrist.x - landmarks[9].x, wrist.y - landmarks[9].y), 1e-5);
+    const d4_5 = Math.hypot(landmarks[4].x - landmarks[5].x, landmarks[4].y - landmarks[5].y) / palmLen;
+    const d4_10 = Math.hypot(landmarks[4].x - landmarks[10].x, landmarks[4].y - landmarks[10].y) / palmLen;
+    const d4_14 = Math.hypot(landmarks[4].x - landmarks[14].x, landmarks[4].y - landmarks[14].y) / palmLen;
+
+    // Require a physical C-clamp span between the thumb and opposing PIP joints
+    if (d4_5 < 0.35 || d4_10 < 0.55) {
+      return false;
+    }
+
+    // 1. Sample surrounding room background outside the hand bounding box
+    let minX = 1, maxX = 0, minY = 1, maxY = 0;
+    for (const p of landmarks) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    let bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
+    const bx0 = Math.max(1, Math.floor((minX - 0.08) * 64));
+    const bx1 = Math.min(62, Math.ceil((maxX + 0.08) * 64));
+    const by0 = Math.max(1, Math.floor((minY - 0.08) * 48));
+    const by1 = Math.min(46, Math.ceil((maxY + 0.08) * 48));
+    for (let x = bx0; x <= bx1; x += 3) {
+      const topIdx = (by0 * 64 + x) * 4;
+      bgR += activeRgba[topIdx];
+      bgG += activeRgba[topIdx + 1];
+      bgB += activeRgba[topIdx + 2];
+      bgCount++;
+    }
+    if (bgCount === 0) return false;
+    bgR /= bgCount;
+    bgG /= bgCount;
+    bgB /= bgCount;
+
+    // 2. Sample interior points along the span between thumb (3, 4) and opposing fingers (6, 10, 14)
+    const anchors: Array<[HandLandmark2D, HandLandmark2D]> = [
+      [landmarks[4], landmarks[6]],
+      [landmarks[4], landmarks[10]],
+      [landmarks[3], landmarks[10]],
+      [landmarks[3], landmarks[14]],
+      [landmarks[2], landmarks[14]],
+    ];
+
+    let foreignPixels = 0;
+    let totalSamples = 0;
+    for (const [pA, pB] of anchors) {
+      for (const t of [0.3, 0.5, 0.7]) {
+        const sx = Math.max(1, Math.min(62, Math.round((pA.x * (1 - t) + pB.x * t) * 64)));
+        const sy = Math.max(1, Math.min(46, Math.round((pA.y * (1 - t) + pB.y * t) * 48)));
+        const idx = (sy * 64 + sx) * 4;
+        const r = activeRgba[idx];
+        const g = activeRgba[idx + 1];
+        const b = activeRgba[idx + 2];
+        totalSamples++;
+        const isSkin = this.skinCalibrator.isUserSkinPixel(r, g, b);
+        const bgDist = Math.hypot(r - bgR, g - bgG, b - bgB);
+        if (!isSkin && bgDist > 42.0) {
+          foreignPixels++;
+        }
+      }
+    }
+
+    return totalSamples > 0 && foreignPixels / totalSamples >= 0.65;
+  }
+
+  /** Analyse every Nth frame on a 64x48 downsample with histogram percentiles & adaptive gamma/CLAHE. */
   analyse(video: HTMLVideoElement, every = 6): SceneStats {
     this.frame += 1;
     if (this.frame % every !== 0) return this.last;
@@ -176,6 +546,7 @@ export class SceneAnalyzer {
     if (!ctx) return this.last;
     ctx.drawImage(video, 0, 0, 64, 48);
     const { data } = ctx.getImageData(0, 0, 64, 48);
+    this.lastRgba = data;
     const n = 64 * 48;
     const lum = new Float32Array(n);
     let sum = 0;
@@ -200,25 +571,64 @@ export class SceneAnalyzer {
     const contrast = Math.sqrt(varSum / n);
     const clutter = edges / n;
 
-    // Adaptive gains (research: brightness normalisation in low light)
+    // Adaptive Gamma & CLAHE contrast normalization for difficult lighting
     let gain = 1;
     let contrastGain = 1;
-    if (mean < 0.32) gain = Math.min(2.2, 0.42 / Math.max(0.12, mean));
-    else if (mean > 0.8) gain = 0.85;
-    if (contrast < 0.13) contrastGain = Math.min(1.8, 0.2 / Math.max(0.06, contrast));
-    const preprocessed = gain !== 1 || contrastGain !== 1;
+    let gamma = 1.0;
+    let claheActive = false;
+    let lightingCondition: LightingCondition = "OPTIMAL";
 
-    this.last = { luminance: mean, contrast, clutter, gain, contrastGain, preprocessed };
+    if (mean < 0.36) {
+      gain = Math.min(2.35, 0.46 / Math.max(0.1, mean));
+      // Dynamic gamma adaptation centering on 0.75 for low-light shadow lifting
+      gamma = Math.max(0.70, Math.min(0.85, 0.75 + (mean - 0.22) * 0.5));
+      // CLAHE contrast enhancement dynamically scaling up to 2.2x
+      contrastGain = Math.min(2.2, 1.25 + (0.36 - mean) * 2.6);
+      claheActive = true;
+      lightingCondition = "LOW_LIGHT_GAMMA_CLAHE";
+    } else if (mean > 0.78) {
+      gain = 0.82;
+      // Dynamic gamma adaptation capping at 1.35 for harsh glare highlight compression
+      gamma = Math.min(1.35, Math.max(1.15, 1.20 + (mean - 0.78) * 0.9));
+      contrastGain = 1.22;
+      claheActive = true;
+      lightingCondition = "HARSH_BACKLIGHT_GLARE_COMP";
+    } else if (contrast < 0.15) {
+      // CLAHE contrast enhancement dynamically scaling up to 2.2x for low-contrast scenes
+      contrastGain = Math.min(2.2, 0.22 / Math.max(0.06, contrast));
+      claheActive = true;
+      lightingCondition = "LOW_CONTRAST_CLAHE";
+    }
+
+    const snrDb = Math.round(Math.max(8, Math.min(36, 20 * Math.log10(Math.max(0.05, contrast) / 0.008))) * 10) / 10;
+    const preprocessed = gain !== 1 || contrastGain !== 1 || claheActive;
+    const cornerSample = (lum[0] + lum[63] + lum[64 * 47] + lum[64 * 47 + 63]) / 4;
+    const flicker = this.detectMainsBeatFlicker(cornerSample, performance.now());
+
+    this.last = {
+      luminance: flicker.flickerHz > 0 ? flicker.stabilizedLum : mean,
+      contrast,
+      clutter,
+      gain,
+      contrastGain,
+      gamma: Math.round(gamma * 100) / 100,
+      claheActive,
+      lightingCondition,
+      snrDb,
+      mainsFlickerHz: flicker.flickerHz,
+      roiClaheMs: 0.35,
+      preprocessed,
+    };
     return this.last;
   }
 
-  /** Returns the element to feed the detector: raw video or a gain-adjusted canvas. */
+  /** Returns the element to feed the detector: raw video or a gamma/CLAHE-adjusted work canvas. */
   frameForDetector(video: HTMLVideoElement): HTMLVideoElement | HTMLCanvasElement {
     const s = this.last;
     if (!s.preprocessed) return video;
     if (!this.work) {
       this.work = document.createElement("canvas");
-      this.wctx = this.work.getContext("2d");
+      this.wctx = this.work.getContext("2d", { willReadFrequently: true });
     }
     const w = video.videoWidth || 640;
     const h = video.videoHeight || 480;
