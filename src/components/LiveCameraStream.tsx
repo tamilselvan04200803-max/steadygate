@@ -254,11 +254,16 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     }
   }, []);
 
-  /* ---------------------------- webcam lifecycle ---------------------------- */
-
   const startWebcam = async () => {
     setWebcamError(null);
     cameraErrRef.current = null;
+
+    // Clean up any stale streams before requesting a new one
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("getUserMedia unsupported");
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -268,8 +273,40 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       streamRef.current = stream;
       const v = videoRef.current;
       if (!v) throw new Error("video element missing");
-      v.srcObject = stream;
-      await v.play();
+
+      if (v.srcObject !== stream) {
+        v.srcObject = stream;
+      }
+
+      // Wait for video metadata to be ready to avoid play() interruptions
+      await new Promise<void>((resolve) => {
+        if (v.readyState >= 1) {
+          resolve();
+        } else {
+          const onLoaded = () => {
+            v.removeEventListener("loadedmetadata", onLoaded);
+            resolve();
+          };
+          v.addEventListener("loadedmetadata", onLoaded, { once: true });
+          setTimeout(resolve, 1000);
+        }
+      });
+
+      // Play video with safe AbortError catch
+      try {
+        await v.play();
+      } catch (playErr: any) {
+        if (playErr?.name !== "AbortError") {
+          console.warn("video.play() warning:", playErr);
+        }
+        if (v.paused) {
+          try {
+            await v.play();
+          } catch {
+            // Video can still stream frames once ready
+          }
+        }
+      }
 
       setStatus("LOADING_WASM");
       const r = rt.current;
@@ -825,7 +862,6 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         ref={videoRef}
         playsInline
         muted
-        autoPlay
         className="absolute w-px h-px opacity-0 pointer-events-none"
       />
 

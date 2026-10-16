@@ -285,9 +285,33 @@ export const EnrolmentModal: React.FC<EnrolmentModalProps> = ({
           return;
         }
         streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+        const v = videoRef.current;
+        if (v) {
+          if (v.srcObject !== stream) {
+            v.srcObject = stream;
+          }
+          await new Promise<void>((resolve) => {
+            if (v.readyState >= 1) {
+              resolve();
+            } else {
+              const onLoaded = () => {
+                v.removeEventListener("loadedmetadata", onLoaded);
+                resolve();
+              };
+              v.addEventListener("loadedmetadata", onLoaded, { once: true });
+              setTimeout(resolve, 1000);
+            }
+          });
+          try {
+            await v.play();
+          } catch (playErr: any) {
+            if (playErr?.name !== "AbortError") {
+              console.warn("Enrolment video.play() warning:", playErr);
+            }
+            if (v.paused) {
+              try { await v.play(); } catch { /* ignore */ }
+            }
+          }
         }
         const loaded = await loadHandLandmarker(() => {}, "GPU");
         if (cancelled) {
@@ -686,7 +710,6 @@ export const EnrolmentModal: React.FC<EnrolmentModalProps> = ({
               ref={videoRef}
               playsInline
               muted
-              autoPlay
               className="absolute w-px h-px opacity-0 pointer-events-none"
             />
 
