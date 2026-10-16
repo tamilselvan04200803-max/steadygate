@@ -78,6 +78,62 @@ export type ObjectGraspRejectionReason =
   | "CASUAL_FACE_TOUCH_OR_SCRATCH"
   | "CAREGIVER_OR_BYSTANDER_HAND_IGNORED";
 
+export interface ObjectPresenceEnsembleMetrics {
+  /** S_A1 [0..1]: Interior grasp zone vs. knuckle self-skin YCbCr divergence (0 = pure self-skin, 1 = foreign object color/mass) */
+  signalA1_SkinDivergence: number;
+  /** S_A2 [0..1]: Physical gap & wide-clamp biomechanical obstruction */
+  signalA2_GapObstruction: number;
+  /** S_A3 [0..1]: Protruding linear object boundary (collinear Sobel edge lines extending beyond fingers) */
+  signalA3_ProtrudingEdgeLines: number;
+  /** S_A4 [0..1]: MCP-flexed / PIP-flat surface clamp dissociation */
+  signalA4_McpPipDissociation: number;
+  /** S_A5 [0..1]: Inter-finger clamp spacing rigidity */
+  signalA5_ClampRigidity: number;
+  /** Weighted ensemble score S_object in [0..1] */
+  ensembleScore: number;
+  /** Number of independent signals >= 0.45 */
+  activeSignalCount: number;
+  /** True when bare-fist immunity gate exempts the frame */
+  isCanonicalBareFist: boolean;
+  /** True when ensemble confirms a physical object is in the hand */
+  confirmedObjectInHand: boolean;
+}
+
+export type IntentionalityStatus =
+  | "INTENTIONAL_READY"
+  | "CHIN_REST_OR_FACE_TOUCH_IGNORED"
+  | "CONVERSATIONAL_MOTION_IGNORED"
+  | "OUT_OF_CORRIDOR_OR_RESTING_HAND"
+  | "HOLD_PAUSED_LOOKING_AWAY"
+  | "WAKE_WINDOW_STANDBY";
+
+export interface IntentionalityEnsembleMetrics {
+  /** S_B1 [0..1]: 1.0 when hand is free of face/nose/chin-rest contact halo, 0.0 when resting on chin or touching face */
+  signalB1_NoChinOrFaceTouch: number;
+  /** S_B2 [0..1]: 1.0 when palm centroid & finger flexion are stationary (deliberate command freeze), 0.0 during conversational waving */
+  signalB2_StationaryAnchor: number;
+  /** S_B3 [0..1]: 1.0 when inside active presentation corridor without border clipping or keyboard-edge resting */
+  signalB3_CorridorValid: number;
+  /** S_B4 [0..1]: 1.0 when user is facing screen/camera, 0.0 when looking away */
+  signalB4_FrontalAttention: number;
+  /** S_B5 [0..1]: 1.0 when engagement window is active or high-confidence wake threshold met */
+  signalB5_EngagementWindow: number;
+  /** Weighted intentionality score S_intent in [0..1] */
+  intentScore: number;
+  /** Number of intentionality signals >= 0.50 */
+  activeIntentSignals: number;
+  /** Whether the frame is accepted as an intentional command posture */
+  isIntentional: boolean;
+  /** Explicit diagnostic status for HUD & voter gating */
+  status: IntentionalityStatus;
+  /** Spatial anchor drift radius over rolling 250ms window */
+  anchorDriftRadius: number;
+  /** Intrinsic finger flexion standard deviation over rolling 250ms window */
+  flexionDriftStd: number;
+  /** True when chin-rest or perioral proximity was detected */
+  chinRestDetected: boolean;
+}
+
 export interface ExtractedFrameTelemetry {
   frameId: string;
   capturedAtIso: string;

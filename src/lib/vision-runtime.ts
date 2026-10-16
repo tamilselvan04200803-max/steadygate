@@ -529,6 +529,43 @@ export class SceneAnalyzer {
       return 0;
     }
 
+    // Phase 1 Bare-Fist Immunity inside Photometric Aperture Detector:
+    // If all 4 fingers are tightly curled (meanPipDeg < 112°) with tips inside the palm
+    // envelope (< 0.46 * palmLen) and MCP joints in natural fist flexion (68°..128°),
+    // verify whether the interior finger cluster matches the user's knuckle skin YCbCr.
+    let pipSum = 0;
+    let mcpSum = 0;
+    const palmCx0 =
+      (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5;
+    const palmCy0 =
+      (landmarks[0].y + landmarks[5].y + landmarks[9].y + landmarks[13].y + landmarks[17].y) / 5;
+    let tipToPalmSum = 0;
+    for (const [mcpIdx, pipIdx, tipIdx] of fingerTriplets) {
+      pipSum += jointAngle(landmarks[mcpIdx], landmarks[pipIdx], landmarks[tipIdx]);
+      mcpSum += jointAngle(wrist, landmarks[mcpIdx], landmarks[pipIdx]);
+      tipToPalmSum +=
+        Math.hypot(landmarks[tipIdx].x - palmCx0, landmarks[tipIdx].y - palmCy0) / palmLen;
+    }
+    const meanPip4Deg = pipSum / 4;
+    const meanMcp4Deg = mcpSum / 4;
+    const tipToPalmMean = tipToPalmSum / 4;
+    const d4_9 =
+      Math.hypot(landmarks[4].x - landmarks[9].x, landmarks[4].y - landmarks[9].y) / palmLen;
+    const d4_17 =
+      Math.hypot(landmarks[4].x - landmarks[17].x, landmarks[4].y - landmarks[17].y) / palmLen;
+
+    if (
+      meanPip4Deg < 112 &&
+      meanMcp4Deg >= 68 &&
+      meanMcp4Deg <= 128 &&
+      tipToPalmMean < 0.46 &&
+      d4_5 < 0.58 &&
+      d4_9 < 0.48 &&
+      d4_17 < 1.04
+    ) {
+      return 0;
+    }
+
     // 1. Sample surrounding room background outside the hand bounding box (top, left, and right strips)
     let minX = 1,
       maxX = 0,
@@ -673,6 +710,197 @@ export class SceneAnalyzer {
     rgbaBuffer?: Uint8ClampedArray
   ): boolean {
     return this.computeApertureObjectOccupancy(landmarks, rgbaBuffer) >= 0.45;
+  }
+
+  /**
+   * Ensemble A Signal A1 — Interior Palm vs. Knuckle Self-Skin YCbCr Divergence [0..1]:
+   * Samples the user's dorsal/metacarpal knuckle ridge (landmarks 0, 5, 9, 13, 17) as the
+   * self-skin reference, and compares it against the interior grasp zone (4-8, 4-10, 6, 8, 12).
+   * Returns 0.0 when interior pixels closely match knuckle skin chrominance (deltaCbCr < 12.0),
+   * and scales toward 1.0 when a foreign object mass occupies the interior.
+   */
+  computeKnuckleSkinDivergence(
+    landmarks: HandLandmark2D[],
+    rgbaBuffer?: Uint8ClampedArray
+  ): number {
+    if (!landmarks || landmarks.length < 21) return 0;
+    const activeRgba = rgbaBuffer || this.lastRgba;
+    if (!activeRgba || activeRgba.length < 64 * 48 * 4) return 0;
+
+    const toYCbCr = (r: number, g: number, b: number) => {
+      const y = 0.299 * r + 0.587 * g + 0.114 * b;
+      const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+      const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+      return { y, cb, cr };
+    };
+
+    const knuckleIndices = [0, 5, 9, 13, 17];
+    let kCb = 0,
+      kCr = 0,
+      kY = 0;
+    for (const idx of knuckleIndices) {
+      const sx = Math.max(1, Math.min(62, Math.round(landmarks[idx].x * 64)));
+      const sy = Math.max(1, Math.min(46, Math.round(landmarks[idx].y * 48)));
+      const p = (sy * 64 + sx) * 4;
+      const c = toYCbCr(activeRgba[p], activeRgba[p + 1], activeRgba[p + 2]);
+      kCb += c.cb;
+      kCr += c.cr;
+      kY += c.y;
+    }
+    kCb /= knuckleIndices.length;
+    kCr /= knuckleIndices.length;
+    kY /= knuckleIndices.length;
+
+    const interiorPoints: Array<{ x: number; y: number }> = [
+      { x: (landmarks[4].x + landmarks[8].x) * 0.5, y: (landmarks[4].y + landmarks[8].y) * 0.5 },
+      { x: (landmarks[4].x + landmarks[10].x) * 0.5, y: (landmarks[4].y + landmarks[10].y) * 0.5 },
+      { x: (landmarks[6].x + landmarks[10].x) * 0.5, y: (landmarks[6].y + landmarks[10].y) * 0.5 },
+      { x: landmarks[8].x, y: landmarks[8].y },
+      { x: landmarks[12].x, y: landmarks[12].y },
+    ];
+
+    let totalDeltaCbCr = 0;
+    for (const pt of interiorPoints) {
+      const sx = Math.max(1, Math.min(62, Math.round(pt.x * 64)));
+      const sy = Math.max(1, Math.min(46, Math.round(pt.y * 48)));
+      const p = (sy * 64 + sx) * 4;
+      const c = toYCbCr(activeRgba[p], activeRgba[p + 1], activeRgba[p + 2]);
+      totalDeltaCbCr += Math.hypot(c.cb - kCb, c.cr - kCr);
+    }
+    const meanDeltaCbCr = totalDeltaCbCr / interiorPoints.length;
+    if (meanDeltaCbCr < 12.0) {
+      return 0;
+    }
+    const occ = this.computeApertureObjectOccupancy(landmarks, activeRgba);
+    if (occ <= 0.15) return 0;
+    return Math.round(Math.min(1, ((meanDeltaCbCr - 10.0) / 22.0) * 0.5 + occ * 0.5) * 100) / 100;
+  }
+
+  /**
+   * Ensemble A Signal A3 — Protruding Linear Object Boundary Detector [0..1]:
+   * Samples the 64x48 Sobel gradient map along chords connecting thumb (4) and index/pinky
+   * tips (8, 20) extending 20% outside the hand bounding box to detect rigid straight object edges.
+   */
+  computeProtrudingEdgeLineScore(
+    landmarks: HandLandmark2D[],
+    rgbaBuffer?: Uint8ClampedArray
+  ): number {
+    if (!landmarks || landmarks.length < 21) return 0;
+    const activeRgba = rgbaBuffer || this.lastRgba;
+    if (!activeRgba || activeRgba.length < 64 * 48 * 4) return 0;
+
+    const lines: Array<[HandLandmark2D, HandLandmark2D]> = [
+      [landmarks[4], landmarks[8]],
+      [landmarks[4], landmarks[20]],
+      [landmarks[8], landmarks[20]],
+    ];
+    const tSamples = [-0.2, -0.1, 0.5, 1.1, 1.2];
+    let strongEdgeCount = 0;
+    let totalSamples = 0;
+
+    for (const [pA, pB] of lines) {
+      for (const t of tSamples) {
+        const sx = Math.max(2, Math.min(61, Math.round((pA.x * (1 - t) + pB.x * t) * 64)));
+        const sy = Math.max(2, Math.min(45, Math.round((pA.y * (1 - t) + pB.y * t) * 48)));
+        const leftIdx = (sy * 64 + (sx - 1)) * 4;
+        const rightIdx = (sy * 64 + (sx + 1)) * 4;
+        const upIdx = ((sy - 1) * 64 + sx) * 4;
+        const downIdx = ((sy + 1) * 64 + sx) * 4;
+        const gx =
+          activeRgba[rightIdx] -
+          activeRgba[leftIdx] +
+          (activeRgba[rightIdx + 1] - activeRgba[leftIdx + 1]);
+        const gy =
+          activeRgba[downIdx] -
+          activeRgba[upIdx] +
+          (activeRgba[downIdx + 1] - activeRgba[upIdx + 1]);
+        totalSamples++;
+        if (Math.hypot(gx, gy) > 52.0) {
+          strongEdgeCount++;
+        }
+      }
+    }
+    if (totalSamples === 0) return 0;
+    return Math.round(Math.min(1, strongEdgeCount / totalSamples) * 100) / 100;
+  }
+
+  /**
+   * Ensemble B Signal B1 — Face, Mouth & Chin-Rest Exclusion Halo:
+   * Detects both direct nose/face scratch AND Chin-Rest / Perioral Proximity
+   * (e.g. resting the chin/jaw on a closed fist in the central upper-neck column).
+   */
+  detectFaceAndChinZone(
+    landmarks: HandLandmark2D[],
+    rgbaBuffer?: Uint8ClampedArray
+  ): {
+    faceScratchDetected: boolean;
+    chinRestDetected: boolean;
+  } {
+    if (!landmarks || landmarks.length < 21) {
+      return { faceScratchDetected: false, chinRestDetected: false };
+    }
+    const faceScratchDetected = this.detectFaceNoseOverlap(landmarks, rgbaBuffer);
+    const activeRgba = rgbaBuffer || this.lastRgba;
+
+    const wrist = landmarks[0];
+    const palmLen = Math.max(
+      Math.hypot(wrist.x - landmarks[9].x, wrist.y - landmarks[9].y),
+      1e-5
+    );
+    const palmCx =
+      (landmarks[0].x + landmarks[5].x + landmarks[9].x + landmarks[13].x + landmarks[17].x) / 5;
+    const topKnuckleY = Math.min(
+      landmarks[4].y,
+      landmarks[5].y,
+      landmarks[9].y,
+      landmarks[13].y
+    );
+
+    const pipIdx = this.jointAngleDeg(landmarks[5], landmarks[6], landmarks[8]);
+    const pipMid = this.jointAngleDeg(landmarks[9], landmarks[10], landmarks[12]);
+    const pipRng = this.jointAngleDeg(landmarks[13], landmarks[14], landmarks[16]);
+    const pipPnk = this.jointAngleDeg(landmarks[17], landmarks[18], landmarks[20]);
+    const meanPip4 = (pipIdx + pipMid + pipRng + pipPnk) / 4;
+
+    const verticalKnuckleSpan = Math.abs(landmarks[17].y - landmarks[5].y) / palmLen;
+    let upperChinSkinContact = false;
+    if (activeRgba && activeRgba.length >= 64 * 48 * 4) {
+      const cx = Math.max(8, Math.min(55, Math.round(palmCx * 64)));
+      const cyTop = Math.max(4, Math.min(40, Math.round((topKnuckleY - 0.05) * 48)));
+      let skinCount = 0;
+      let sampleCount = 0;
+      for (let y = Math.max(2, cyTop - 3); y <= Math.min(45, cyTop + 2); y++) {
+        for (let x = Math.max(2, cx - 5); x <= Math.min(61, cx + 5); x += 2) {
+          const idx = (y * 64 + x) * 4;
+          sampleCount++;
+          if (
+            this.skinCalibrator.isUserSkinPixel(
+              activeRgba[idx],
+              activeRgba[idx + 1],
+              activeRgba[idx + 2]
+            )
+          ) {
+            skinCount++;
+          }
+        }
+      }
+      if (sampleCount > 0 && skinCount / sampleCount >= 0.45) {
+        upperChinSkinContact = true;
+      }
+    }
+
+    const chinRestDetected =
+      upperChinSkinContact &&
+      palmCx >= 0.34 &&
+      palmCx <= 0.66 &&
+      topKnuckleY >= 0.22 &&
+      topKnuckleY <= 0.46 &&
+      wrist.y >= 0.46 &&
+      wrist.y <= 0.72 &&
+      meanPip4 < 75 &&
+      verticalKnuckleSpan >= 0.38;
+
+    return { faceScratchDetected, chinRestDetected };
   }
 
   /** Analyse every Nth frame on a 64x48 downsample with histogram percentiles & adaptive gamma/CLAHE. */

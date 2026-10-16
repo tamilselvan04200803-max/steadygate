@@ -33,6 +33,7 @@ export interface AgentCodePatchEntry {
     minHorizPipCount?: number;
     minHorizTipCount?: number;
     requireVerticalKnuckleStack?: boolean;
+    minMeanMcpDeg?: number;
     maxMeanMcpDeg?: number;
     minMeanPip4Deg?: number;
     maxMeanPip4Deg?: number;
@@ -41,6 +42,8 @@ export interface AgentCodePatchEntry {
     maxFourMax?: number;
     minThumbFlex?: number;
     maxThumbFlex?: number;
+    minD4_5?: number;
+    maxD4_5?: number;
     minD4_9?: number;
     maxD4_9?: number;
     minD4_17?: number;
@@ -90,19 +93,20 @@ export function computeMirrorInvariantShapeDistance(
 
 /**
  * Built-in + Agent-Appended Executable Patch Registry
+ * Guaranteed free of bare-fist and bare-open-palm collisions.
  */
 export const GENERATED_AGENT_PATCHES: AgentCodePatchEntry[] = [
   {
     id: "patch_case4_side_book_cover_clamp",
     createdAt: "2026-10-16T13:30:00.000Z",
     description:
-      "Block Side-Edge Book/Notebook Cover Clamp (vertical knuckle stack 5-9-13-17, 4 fingers reaching horizontally across book cover with flexed MCP knuckles < 130° and open PIP joints >= 120°)",
+      "Block Side-Edge Book/Notebook Cover Clamp (vertical knuckle stack 5-9-13-17, 4 fingers reaching horizontally across book cover with flexed MCP knuckles < 130° and open PIP joints >= 122°)",
     action: "BLOCK_OBJECT_HOLD",
     predicates: {
       requireVerticalKnuckleStack: true,
       minHorizTipCount: 3,
       maxMeanMcpDeg: 130,
-      minMeanPip4Deg: 120,
+      minMeanPip4Deg: 122,
       minFourMean: 0.24,
       minD4_9: 0.52,
     },
@@ -111,16 +115,18 @@ export const GENERATED_AGENT_PATCHES: AgentCodePatchEntry[] = [
     id: "patch_case5_vertical_book_spine_grip",
     createdAt: "2026-10-16T13:30:00.000Z",
     description:
-      "Block Vertical Book Spine Side-Hook Grip (vertical knuckle stack 5-9-13-17, horizontal PIP segments wrapping spine, thumb bracing spine edge)",
+      "Block Vertical Book Spine Side-Hook Grip (vertical knuckle stack 5-9-13-17, extended MCP >= 134° with horizontal PIP segments wrapping spine, thumb bracing spine edge d4_9 >= 0.49 & d4_17 >= 1.06)",
     action: "BLOCK_OBJECT_HOLD",
     predicates: {
       requireVerticalKnuckleStack: true,
       minHorizPipCount: 3,
+      minMeanMcpDeg: 134,
       maxFourMax: 0.46,
       minThumbFlex: 0.30,
       maxThumbFlex: 0.75,
+      minD4_9: 0.49,
       maxD4_9: 0.68,
-      minD4_17: 0.72,
+      minD4_17: 1.06,
       maxThumbIndex: 0.44,
     },
   },

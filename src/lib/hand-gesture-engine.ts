@@ -2,6 +2,7 @@ import {
   ExtractedFrameTelemetry,
   HandLandmark2D,
   HandParameters,
+  ObjectPresenceEnsembleMetrics,
   RecognizedGesture,
   UserProfile,
 } from "./types";
@@ -11,7 +12,11 @@ import {
 } from "./biomechanics/palm-orientation";
 import { resolveLocaleGesture } from "./locales/gesture-packs";
 import { normalizeFingerROM, projectOntoTorsoGravity } from "./biomechanics/rom-gravity-normalizer";
-import { evaluateAgentPatches } from "./learned-agent-rules";
+import {
+  evaluateAgentPatches,
+  extractFrameStructuralFeatures,
+  isStructuralBareFist,
+} from "./learned-agent-rules";
 import {
   computeNormalizedShape21,
   computeMirrorInvariantShapeDistance,
@@ -314,6 +319,7 @@ export interface ObjectGraspAnalysis {
   lumbricalFlatness: number; // straightness - wristReach
   apertureOccupancyRatio?: number; // [0..1] Confirmed visual/contact object occupancy
   faceOverlapDetected?: boolean;
+  objectEnsemble?: ObjectPresenceEnsembleMetrics;
 }
 
 function dist(p1: HandLandmark2D, p2: HandLandmark2D): number {
@@ -510,10 +516,211 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
 }
 
 /**
- * Phase 1 — Two-Factor Physical Object Confirmation Gate (`detectObjectGrasp`):
+ * Phase 1 — Strict Bare-Fist Immunity Gate (`isCanonicalBareFist`):
+ * Verifies that all 4 fingers are tightly curled into the palm envelope,
+ * PIP joints are flexed (< 112°), MCP joints are in natural fist flexion (68°..128°),
+ * thumb is adducted against the fist (not stretched wide across a phone/book),
+ * and no foreign non-skin object mass occupies the interior palm.
+ */
+export function isCanonicalBareFist(
+  landmarks: HandLandmark2D[],
+  handParams?: HandParameters,
+  options?: {
+    foreignObjectDetected?: boolean;
+    apertureOccupancyRatio?: number;
+  }
+): boolean {
+  if (!landmarks || landmarks.length < 21) return false;
+  const params = handParams || extractHandParameters(landmarks);
+  const feat = extractFrameStructuralFeatures(landmarks, params);
+  return isStructuralBareFist(feat, options);
+}
+
+/**
+ * Phase 2 — Ensemble A: 5-Signal Independent Object-in-Hand Detector
+ * Combines 5 independent mathematical & photometric detectors into a weighted
+ * ObjectPresenceEnsembleMetrics score S_object in [0..1].
+ */
+export function evaluateObjectPresenceEnsemble(
+  landmarks: HandLandmark2D[],
+  handParams?: HandParameters,
+  options?: {
+    webcamMode?: boolean;
+    foreignObjectDetected?: boolean;
+    apertureOccupancyRatio?: number;
+    skinDivergenceScore?: number;
+    protrudingEdgeLineScore?: number;
+  }
+): ObjectPresenceEnsembleMetrics {
+  if (!landmarks || landmarks.length < 21) {
+    return {
+      signalA1_SkinDivergence: 0,
+      signalA2_GapObstruction: 0,
+      signalA3_ProtrudingEdgeLines: 0,
+      signalA4_McpPipDissociation: 0,
+      signalA5_ClampRigidity: 0,
+      ensembleScore: 0,
+      activeSignalCount: 0,
+      isCanonicalBareFist: false,
+      confirmedObjectInHand: false,
+    };
+  }
+
+  const params = handParams || extractHandParameters(landmarks);
+  const feat = extractFrameStructuralFeatures(landmarks, params);
+  const bareFist = isStructuralBareFist(feat, options);
+
+  const [thumb, idx, mid, rng, pnk] = params.fingerFlexion;
+  const fourMean = feat.fourMean;
+  const fourMax = feat.fourMax;
+  const fourMin = feat.fourMin;
+  const wrist = landmarks[0];
+  const palmLen = Math.max(dist(wrist, landmarks[9]), 1e-5);
+  const pinchNorm = dist(landmarks[4], landmarks[8]) / palmLen;
+  const d4_5 = dist(landmarks[4], landmarks[5]) / palmLen;
+  const d4_10 = dist(landmarks[4], landmarks[10]) / palmLen;
+  const d4_14 = dist(landmarks[4], landmarks[14]) / palmLen;
+
+  const visualOcc =
+    options?.apertureOccupancyRatio !== undefined
+      ? options.apertureOccupancyRatio
+      : options?.foreignObjectDetected
+      ? 0.85
+      : 0;
+
+  // Signal A1 (weight 0.30): Interior Palm vs. Knuckle Self-Skin YCbCr Divergence
+  let signalA1 = 0;
+  if (!bareFist) {
+    if (options?.skinDivergenceScore !== undefined) {
+      signalA1 = clamp01(options.skinDivergenceScore);
+    } else if (visualOcc >= 0.38) {
+      signalA1 = clamp01(visualOcc);
+    } else if (!options?.webcamMode && fourMean >= 0.16 && fourMean <= 0.58) {
+      signalA1 = 0.65;
+    }
+  }
+
+  // Signal A2 (weight 0.25): Physical Gap & Wide-Clamp Biomechanical Obstruction
+  let signalA2 = 0;
+  if (!bareFist) {
+    const isWidePhoneClamp =
+      idx >= 0.5 && Math.max(mid, rng, pnk) < 0.45 && d4_5 > 0.72 && d4_10 > 1.1 && d4_14 > 1.1;
+    const isSpineWideHook =
+      feat.verticalKnuckleStack &&
+      feat.meanMcpDeg >= 134 &&
+      feat.d4_17 >= 1.06 &&
+      feat.d4_9 >= 0.49;
+    const isCylindricalGap =
+      feat.tipToMcpMean > 0.52 &&
+      pinchNorm >= 0.42 &&
+      pinchNorm <= 1.15 &&
+      fourMean >= 0.16 &&
+      fourMax < 0.56;
+    if (isWidePhoneClamp || isSpineWideHook) {
+      signalA2 = 1.0;
+    } else if (isCylindricalGap) {
+      signalA2 = 0.85;
+    } else if (feat.d4_9 >= 0.52 && fourMean >= 0.22 && fourMean <= 0.6) {
+      signalA2 = 0.7;
+    }
+  }
+
+  // Signal A3 (weight 0.20): Protruding Linear Object Boundary Detector
+  let signalA3 = 0;
+  if (!bareFist) {
+    if (options?.protrudingEdgeLineScore !== undefined) {
+      signalA3 = clamp01(options.protrudingEdgeLineScore);
+    } else if (
+      feat.verticalKnuckleStack &&
+      (feat.horizTipCount >= 3 || feat.horizPipCount >= 3) &&
+      (feat.meanPip4Deg >= 120 || (feat.meanMcpDeg >= 134 && feat.d4_17 >= 1.06))
+    ) {
+      signalA3 = 0.85;
+    } else if (!options?.webcamMode && fourMean >= 0.16 && fourMean <= 0.58 && pinchNorm > 0.24) {
+      signalA3 = 0.75;
+    }
+  }
+
+  // Signal A4 (weight 0.15): MCP-vs-PIP Surface/Spine Clamp Joint Dissociation
+  let signalA4 = 0;
+  if (!bareFist) {
+    if (
+      (feat.meanMcpDeg <= 132 && feat.meanPip4Deg >= 120 && fourMean >= 0.22) ||
+      (feat.verticalKnuckleStack &&
+        feat.meanMcpDeg >= 134 &&
+        feat.meanPip4Deg <= 45 &&
+        feat.d4_17 >= 1.06)
+    ) {
+      signalA4 = 1.0;
+    } else if (
+      feat.meanMcpDeg < 145 &&
+      feat.meanPip4Deg >= 122 &&
+      feat.tipToMcpMean > 0.54 &&
+      fourMax < 0.64
+    ) {
+      signalA4 = 0.82;
+    }
+  }
+
+  // Signal A5 (weight 0.10): Inter-Finger Clamp Spacing Rigidity
+  let signalA5 = 0;
+  if (!bareFist) {
+    const d1 = params.interFingerTipDistances?.indexMiddle ?? 0.2;
+    const d2 = params.interFingerTipDistances?.middleRing ?? 0.2;
+    const d3 = params.interFingerTipDistances?.ringPinky ?? 0.2;
+    const meanD = (d1 + d2 + d3) / 3;
+    const stdD = Math.sqrt(((d1 - meanD) ** 2 + (d2 - meanD) ** 2 + (d3 - meanD) ** 2) / 3);
+    if (
+      (fourMean >= 0.16 && fourMean <= 0.58 && fourMax - fourMin < 0.24 && stdD < 0.055) ||
+      (feat.verticalKnuckleStack && (feat.horizPipCount >= 3 || feat.horizTipCount >= 3))
+    ) {
+      signalA5 = 0.9;
+    }
+  }
+
+  // Self-skin homogeneity penalty in live webcam mode when no foreign object mass is present
+  const selfSkinDiscount =
+    options?.webcamMode && signalA1 === 0 && visualOcc < 0.35 && signalA2 < 0.95 && signalA4 < 0.95
+      ? -0.25
+      : 0;
+
+  const rawWeighted =
+    0.3 * signalA1 +
+    0.25 * signalA2 +
+    0.2 * signalA3 +
+    0.15 * signalA4 +
+    0.1 * signalA5 +
+    selfSkinDiscount;
+  const ensembleScore = Math.round(clamp01(rawWeighted) * 100) / 100;
+
+  const signals = [signalA1, signalA2, signalA3, signalA4, signalA5];
+  const activeSignalCount = signals.filter((s) => s >= 0.45).length;
+
+  const confirmedObjectInHand =
+    !bareFist &&
+    fourMean < 0.72 &&
+    ((activeSignalCount >= 2 && ensembleScore >= 0.55) ||
+      signalA2 >= 0.95 ||
+      (signalA4 >= 0.95 && signalA2 >= 0.65));
+
+  return {
+    signalA1_SkinDivergence: Math.round(signalA1 * 100) / 100,
+    signalA2_GapObstruction: Math.round(signalA2 * 100) / 100,
+    signalA3_ProtrudingEdgeLines: Math.round(signalA3 * 100) / 100,
+    signalA4_McpPipDissociation: Math.round(signalA4 * 100) / 100,
+    signalA5_ClampRigidity: Math.round(signalA5 * 100) / 100,
+    ensembleScore,
+    activeSignalCount,
+    isCanonicalBareFist: bareFist,
+    confirmedObjectInHand,
+  };
+}
+
+/**
+ * Phase 1 & Phase 2 — Two-Factor + 5-Signal Physical Object Confirmation Gate (`detectObjectGrasp`):
  * Concludes `isObjectGrasp = true` ONLY when there is confirmed evidence that the user
- * has a physical object in their hand (Factor A: Visual/Spatial Object Presence inside
- * the Grasp Aperture OR Rigid Biomechanical Contact Invariants) AND Factor B (Posture Candidate).
+ * has a physical object in their hand (Ensemble A / Biomechanical Invariants) and NEVER
+ * blocks a canonical bare FIST (`isCanonicalBareFist`) or open posture (`isPositiveOpenPostureOverride`).
  */
 export function detectObjectGrasp(
   landmarks: HandLandmark2D[],
@@ -523,6 +730,8 @@ export function detectObjectGrasp(
     webcamMode?: boolean;
     foreignObjectDetected?: boolean;
     apertureOccupancyRatio?: number;
+    skinDivergenceScore?: number;
+    protrudingEdgeLineScore?: number;
   }
 ): ObjectGraspAnalysis {
   if (!landmarks || landmarks.length < 21) {
@@ -620,24 +829,38 @@ export function detectObjectGrasp(
     (maxAdminPositiveSim >= 0.85 && straightPipAndMcpCount >= 3) ||
     (straightPipAndMcpCount >= 3 && fourMean >= 0.72);
 
+  const objectEnsemble = evaluateObjectPresenceEnsemble(landmarks, params, options);
+  const bareFistOverride = objectEnsemble.isCanonicalBareFist;
+
   // 0a. Check Admin-Learned Negative Grasp Signatures (enabled in both offline & live webcam for user-recorded captures)
   if (
     !isPositiveOpenPostureOverride &&
+    !bareFistOverride &&
     fourMean <= 0.65 &&
     activeAdminModel.negativeGraspSignatures.length > 0
   ) {
     const liveShape21 = computeNormalizedShape21(landmarks);
+    const meanPip4Deg = (pipAngles[1] + pipAngles[2] + pipAngles[3] + pipAngles[4]) / 4.0;
     for (const neg of activeAdminModel.negativeGraspSignatures) {
       const isUserRecorded = !String(neg.id || "").startsWith("neg_sig_");
-      if (options?.webcamMode && !isUserRecorded && !options?.foreignObjectDetected && visualOccupancy < 0.45) {
+      if (
+        options?.webcamMode &&
+        !isUserRecorded &&
+        !options?.foreignObjectDetected &&
+        visualOccupancy < 0.45
+      ) {
         continue;
       }
-      if (neg.normalizedShape21 && neg.normalizedShape21.length === 21) {
+      if (
+        neg.normalizedShape21 &&
+        neg.normalizedShape21.length === 21 &&
+        (meanPip4Deg >= 118 || d4_9 >= 0.49 || visualOccupancy >= 0.38)
+      ) {
         const shapeDist = computeMirrorInvariantShapeDistance(
           liveShape21,
           neg.normalizedShape21
         );
-        if (shapeDist <= 0.14) {
+        if (shapeDist <= 0.12) {
           return {
             isObjectGrasp: true,
             reason: "ADMIN_LEARNED_NEGATIVE_GRASP",
@@ -645,6 +868,7 @@ export function detectObjectGrasp(
             cApertureRatio: Math.round(pinchNorm * 100) / 100,
             lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
             apertureOccupancyRatio: Math.max(visualOccupancy, 0.88),
+            objectEnsemble,
           };
         }
       }
@@ -663,6 +887,7 @@ export function detectObjectGrasp(
             cApertureRatio: Math.round(pinchNorm * 100) / 100,
             lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
             apertureOccupancyRatio: Math.max(visualOccupancy, 0.88),
+            objectEnsemble,
           };
         }
       }
@@ -670,8 +895,11 @@ export function detectObjectGrasp(
   }
 
   // 0b. Check In-App Autonomous AI Agent Synthesized Patches & Side-Edge Book/Object Clamps
-  if (!isPositiveOpenPostureOverride) {
-    const agentEval = evaluateAgentPatches(landmarks, params);
+  if (!isPositiveOpenPostureOverride && !bareFistOverride) {
+    const agentEval = evaluateAgentPatches(landmarks, params, {
+      foreignObjectDetected: options?.foreignObjectDetected,
+      apertureOccupancyRatio: visualOccupancy,
+    });
     if (agentEval && agentEval.matched && agentEval.action === "BLOCK_OBJECT_HOLD") {
       return {
         isObjectGrasp: true,
@@ -680,6 +908,7 @@ export function detectObjectGrasp(
         cApertureRatio: Math.round(pinchNorm * 100) / 100,
         lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
         apertureOccupancyRatio: Math.max(visualOccupancy, 0.90),
+        objectEnsemble,
       };
     }
   }
@@ -702,6 +931,7 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.84),
+      objectEnsemble,
     };
   }
 
@@ -724,6 +954,7 @@ export function detectObjectGrasp(
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.78),
       faceOverlapDetected: Boolean(options?.faceOverlapDetected || isBiomechanicalFaceScratch),
+      objectEnsemble,
     };
   }
 
@@ -745,14 +976,13 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.90),
+      objectEnsemble,
     };
   }
 
-  // Factor B — Strict Confirmation Gate & Sub-task 1.1 Positive-Prototype Override:
-  // In live camera mode, if the hand merely forms a curved/semi-flexed shape WITHOUT confirmed
-  // physical object occupancy inside the Grasp Aperture Polygon, OR if the hand matches an
-  // Admin-trained open posture with straight PIP & MCP joints, exempt from all soft object-grasp guards.
+  // Phase 1 Bare-Fist Immunity & Factor B Strict Confirmation Gate:
   if (
+    bareFistOverride ||
     isPositiveOpenPostureOverride ||
     (options?.webcamMode && !options?.foreignObjectDetected && visualOccupancy < 0.45)
   ) {
@@ -763,6 +993,7 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: visualOccupancy,
+      objectEnsemble,
     };
   }
 
@@ -774,6 +1005,7 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.90),
+      objectEnsemble,
     };
   }
 
@@ -801,6 +1033,7 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.82),
+      objectEnsemble,
     };
   }
 
@@ -826,6 +1059,7 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.80),
+      objectEnsemble,
     };
   }
 
@@ -846,6 +1080,7 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.78),
+      objectEnsemble,
     };
   }
 
@@ -859,6 +1094,7 @@ export function detectObjectGrasp(
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
       apertureOccupancyRatio: Math.max(visualOccupancy, 0.76),
+      objectEnsemble,
     };
   }
 
@@ -869,6 +1105,7 @@ export function detectObjectGrasp(
     cApertureRatio: Math.round(pinchNorm * 100) / 100,
     lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
     apertureOccupancyRatio: visualOccupancy,
+    objectEnsemble,
   };
 }
 
@@ -975,6 +1212,8 @@ export function classifyHandGesture(
     webcamMode?: boolean;
     foreignObjectDetected?: boolean;
     apertureOccupancyRatio?: number;
+    skinDivergenceScore?: number;
+    protrudingEdgeLineScore?: number;
     handedness?: "Left" | "Right";
     localeCountryCode?: string;
     userCalib?: Partial<UserAnatomicalCalibration> | null;
@@ -1284,7 +1523,13 @@ export function classifyHandGesture(
             continue;
           }
         }
-        // Respect thumb vertical direction when distinguishing THUMBS_UP vs THUMBS_DOWN
+        // Respect thumb vertical direction and extension when distinguishing THUMBS_UP / THUMBS_DOWN vs FIST
+        if (
+          (key === "THUMBS_UP" || key === "THUMBS_DOWN") &&
+          !(thumb > 0.48 && (d4_9 > 0.68 || d4_10 > 0.65))
+        ) {
+          continue;
+        }
         if (key === "THUMBS_UP" && !(thDy >= -0.05 && wristDy >= 0.0)) continue;
         if (key === "THUMBS_DOWN" && thDy >= -0.05 && wristDy >= 0.0) continue;
 
@@ -1704,6 +1949,7 @@ export const REAL_WORLD_FAILURE_CASES: {
   CASE_3_NOSE_TINGLING_SCRATCH: HandLandmark2D[];
   CASE_4_BOOK_COVER_SIDE_CLAMP: HandLandmark2D[];
   CASE_5_BOOK_SPINE_EDGE_HOLD: HandLandmark2D[];
+  CASE_6_BARE_FIST_195931: HandLandmark2D[];
 } = {
   CASE_1_PHONE_IN_HAND: [
     { x: 0.34, y: 0.915 },
@@ -1819,6 +2065,29 @@ export const REAL_WORLD_FAILURE_CASES: {
     { x: 0.412, y: 0.808 },
     { x: 0.436, y: 0.825 },
     { x: 0.462, y: 0.84 },
+  ],
+  CASE_6_BARE_FIST_195931: [
+    { x: 0.51, y: 0.66, z: 0.0 },
+    { x: 0.46, y: 0.61, z: -0.02 },
+    { x: 0.44, y: 0.55, z: -0.03 },
+    { x: 0.45, y: 0.5, z: -0.03 },
+    { x: 0.47, y: 0.47, z: -0.03 },
+    { x: 0.48, y: 0.48, z: -0.01 },
+    { x: 0.53, y: 0.47, z: -0.02 },
+    { x: 0.51, y: 0.5, z: -0.02 },
+    { x: 0.49, y: 0.51, z: -0.01 },
+    { x: 0.49, y: 0.52, z: -0.01 },
+    { x: 0.54, y: 0.51, z: -0.02 },
+    { x: 0.52, y: 0.54, z: -0.02 },
+    { x: 0.49, y: 0.54, z: -0.01 },
+    { x: 0.5, y: 0.56, z: 0.0 },
+    { x: 0.55, y: 0.55, z: -0.01 },
+    { x: 0.53, y: 0.58, z: -0.01 },
+    { x: 0.5, y: 0.58, z: 0.0 },
+    { x: 0.51, y: 0.6, z: 0.01 },
+    { x: 0.55, y: 0.59, z: 0.0 },
+    { x: 0.53, y: 0.61, z: 0.0 },
+    { x: 0.51, y: 0.61, z: 0.01 },
   ],
 };
 

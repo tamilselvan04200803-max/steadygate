@@ -92,6 +92,7 @@ export interface AgentCodePatchEntry {
     minHorizPipCount?: number;
     minHorizTipCount?: number;
     requireVerticalKnuckleStack?: boolean;
+    minMeanMcpDeg?: number;
     maxMeanMcpDeg?: number;
     minMeanPip4Deg?: number;
     maxMeanPip4Deg?: number;
@@ -100,6 +101,8 @@ export interface AgentCodePatchEntry {
     maxFourMax?: number;
     minThumbFlex?: number;
     maxThumbFlex?: number;
+    minD4_5?: number;
+    maxD4_5?: number;
     minD4_9?: number;
     maxD4_9?: number;
     minD4_17?: number;

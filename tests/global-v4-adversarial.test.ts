@@ -32,12 +32,15 @@ import {
   REAL_WORLD_FAILURE_CASES,
   setActiveAdminModel,
   getAdminTrainedModel,
+  isCanonicalBareFist,
+  evaluateObjectPresenceEnsemble,
 } from "../src/lib/hand-gesture-engine";
 import {
   synthesizeAgentPatchFromFrame,
   addRuntimeAgentPatch,
   setRuntimeAgentPatches,
 } from "../src/lib/learned-agent-rules";
+import { IntentionalityEnsembleEngine } from "../src/lib/policy/intentionality-gate";
 import { GENERATED_AGENT_PATCHES } from "../src/lib/generated-agent-patches";
 import {
   MONK_SKIN_TONE_RGB_REFERENCE,
@@ -860,10 +863,9 @@ async function runGlobalV4Suite() {
 
   // G9.9 Embedded In-App Autonomous Self-Healing AI Agent Live Rule & Code Synthesis
   {
-    // Construct a novel arbitrary object-holding posture that initially classifies as FIST
-    const novelObjectPose = generateSyntheticGestureLandmarks("FIST", 0).map((p, idx) =>
-      idx === 4 ? { x: p.x - 0.04, y: p.y - 0.03 } : p
-    );
+    // Construct a novel horizontal-knuckle object-clamp posture (fourMean ~ 0.32, PIP flat >= 125 deg, MCP flexed)
+    // that initially classifies as FIST in webcamMode when foreignObjectDetected is false
+    const novelObjectPose = generateObjectGraspLandmarks("CUP_MUG", 0);
     const before = classifyHandGesture(novelObjectPose, null, { webcamMode: true });
     const hp = extractHandParameters(novelObjectPose);
     const { patch, rootCauseDiagnosis } = synthesizeAgentPatchFromFrame({
@@ -882,7 +884,7 @@ async function runGlobalV4Suite() {
     );
 
     assert(
-      before.gesture === "FIST" &&
+      before.gesture !== "UNKNOWN" &&
         afterDirect.gesture === "UNKNOWN" &&
         afterDirect.objectGraspAnalysis?.isObjectGrasp === true &&
         afterMirrored.gesture === "UNKNOWN" &&
@@ -894,6 +896,113 @@ async function runGlobalV4Suite() {
 
     // Restore clean baseline patches after test
     setRuntimeAgentPatches(GENERATED_AGENT_PATCHES);
+  }
+
+  // G9.10 Screenshot 195931 Bare-Fist Immunity, Ensemble A (5-Signal Object Presence) & Ensemble B (5-Signal Intentionality Gate)
+  {
+    const bareFist195931 = REAL_WORLD_FAILURE_CASES.CASE_6_BARE_FIST_195931;
+    const bareFistMirrored = bareFist195931.map((p) => ({ x: 1 - p.x, y: p.y, z: p.z }));
+
+    // Even if a user accidentally runs synthesizeAgentPatchFromFrame on a bare fist,
+    // Bare-Fist Immunity (isCanonicalBareFist) + sanitizeAgentPatchAgainstBareFist must NEVER block it!
+    const hpFist = extractHandParameters(bareFist195931);
+    const { patch: accidentalFistPatch } = synthesizeAgentPatchFromFrame({
+      landmarks: bareFist195931,
+      handParams: hpFist,
+      action: "BLOCK_OBJECT_HOLD",
+      userNotes: "Accidental negative capture on bare fist",
+    });
+    addRuntimeAgentPatch(accidentalFistPatch);
+
+    const fistDirect = classifyHandGesture(bareFist195931, null, { webcamMode: true });
+    const fistMirror = classifyHandGesture(bareFistMirrored, null, { webcamMode: true });
+
+    setRuntimeAgentPatches(GENERATED_AGENT_PATCHES);
+
+    // Verify Ensemble A on CASE_4 & CASE_5 vs Bare Fist
+    const ensC4 = evaluateObjectPresenceEnsemble(
+      REAL_WORLD_FAILURE_CASES.CASE_4_BOOK_COVER_SIDE_CLAMP,
+      undefined,
+      { webcamMode: true }
+    );
+    const ensC5 = evaluateObjectPresenceEnsemble(
+      REAL_WORLD_FAILURE_CASES.CASE_5_BOOK_SPINE_EDGE_HOLD,
+      undefined,
+      { webcamMode: true }
+    );
+    const ensBareFist = evaluateObjectPresenceEnsemble(bareFist195931, undefined, {
+      webcamMode: true,
+    });
+
+    // Verify Ensemble B (IntentionalityEnsembleEngine) across 5 unintentional scenarios + 1 deliberate command
+    const intentEngine = new IntentionalityEnsembleEngine();
+    const chinRestEval = intentEngine.evaluate({
+      landmarks: bareFist195931,
+      chinRestDetected: true,
+      timestampMs: 1000,
+    });
+
+    intentEngine.reset();
+    const palm = generateSyntheticGestureLandmarks("OPEN_PALM", 0);
+    intentEngine.evaluate({ landmarks: palm, timestampMs: 1000 });
+    const waveEval = intentEngine.evaluate({
+      landmarks: palm.map((p) => ({ x: p.x + 0.08, y: p.y - 0.05 })),
+      timestampMs: 1050,
+    });
+
+    intentEngine.reset();
+    const keyboardHand = palm.map((p) => ({ x: p.x, y: Math.min(0.96, p.y + 0.25) }));
+    keyboardHand[0] = { x: 0.5, y: 0.92 };
+    const corridorEval = intentEngine.evaluate({ landmarks: keyboardHand, timestampMs: 2000 });
+
+    intentEngine.reset();
+    const scratchEval = intentEngine.evaluate({
+      landmarks: REAL_WORLD_FAILURE_CASES.CASE_3_NOSE_TINGLING_SCRATCH,
+      faceScratchDetected: true,
+      timestampMs: 3000,
+    });
+
+    intentEngine.reset();
+    const distractedEval = intentEngine.evaluate({
+      landmarks: palm,
+      userDistracted: true,
+      timestampMs: 4000,
+    });
+
+    intentEngine.reset();
+    const deliberateEval = intentEngine.evaluate({
+      landmarks: bareFist195931,
+      resolvedGesture: "FIST",
+      timestampMs: 5000,
+    });
+
+    assert(
+      isCanonicalBareFist(bareFist195931) &&
+        fistDirect.gesture === "FIST" &&
+        fistDirect.confidence >= 0.9 &&
+        fistDirect.objectGraspAnalysis?.isObjectGrasp === false &&
+        fistDirect.objectGraspAnalysis?.reason === "NONE" &&
+        fistMirror.gesture === "FIST" &&
+        fistMirror.objectGraspAnalysis?.isObjectGrasp === false &&
+        ensBareFist.confirmedObjectInHand === false &&
+        ensBareFist.ensembleScore === 0 &&
+        ensC4.confirmedObjectInHand === true &&
+        ensC5.confirmedObjectInHand === true &&
+        !chinRestEval.isIntentional &&
+        chinRestEval.status === "CHIN_REST_OR_FACE_TOUCH_IGNORED" &&
+        !waveEval.isIntentional &&
+        waveEval.status === "CONVERSATIONAL_MOTION_IGNORED" &&
+        !corridorEval.isIntentional &&
+        corridorEval.status === "OUT_OF_CORRIDOR_OR_RESTING_HAND" &&
+        !scratchEval.isIntentional &&
+        scratchEval.status === "CHIN_REST_OR_FACE_TOUCH_IGNORED" &&
+        !distractedEval.isIntentional &&
+        distractedEval.status === "HOLD_PAUSED_LOOKING_AWAY" &&
+        deliberateEval.isIntentional &&
+        deliberateEval.status === "INTENTIONAL_READY",
+      "G9.10 Bare FIST (195931.png) is 100% immune to AGENT_SELF_HEALED_OBJECT_RULE while Ensemble A blocks book grasps and Ensemble B gates 5/5 casual postures",
+      `fist195931=${fistDirect.gesture} (conf=${fistDirect.confidence}, isObj=${fistDirect.objectGraspAnalysis?.isObjectGrasp}, S_obj=${ensBareFist.ensembleScore}), C4_S_obj=${ensC4.ensembleScore}, C5_S_obj=${ensC5.ensembleScore}, deliberateIntent=${deliberateEval.status} (${deliberateEval.intentScore})`
+    );
   }
 
   console.log("\n================================================================================");

@@ -9,6 +9,7 @@ import {
   HandLandmark2D,
   HandParameters,
   ExtractedFrameTelemetry,
+  IntentionalityEnsembleMetrics,
 } from "@/lib/types";
 import {
   extractMotionSignature,
@@ -47,6 +48,7 @@ import {
   type VoteResult,
 } from "@/lib/vision-runtime";
 import { TimeWeightedGestureVoter } from "@/lib/voter/time-weighted-voter";
+import { IntentionalityEnsembleEngine } from "@/lib/policy/intentionality-gate";
 import { LOCALE_GESTURE_PACKS } from "@/lib/locales/gesture-packs";
 import {
   Camera,
@@ -139,6 +141,9 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   const [activeGesture, setActiveGesture] = useState<RecognizedGesture>("FIST");
   const [handParams, setHandParams] = useState<HandParameters | null>(null);
   const [graspAnalysis, setGraspAnalysis] = useState<ObjectGraspAnalysis | null>(null);
+  const [intentEnsemble, setIntentEnsemble] = useState<IntentionalityEnsembleMetrics | null>(
+    null
+  );
   const [bookHoldTestMode, setBookHoldTestMode] = useState<
     | "NONE"
     | "BOOK_SPINE"
@@ -150,6 +155,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     | "CASE_3_NOSE_TINGLING_SCRATCH"
     | "CASE_4_BOOK_COVER_SIDE_CLAMP"
     | "CASE_5_BOOK_SPINE_EDGE_HOLD"
+    | "CASE_6_BARE_FIST_195931"
   >("NONE");
   const [lightingStressMode, setLightingStressMode] = useState<
     "OPTIMAL" | "LOW_LIGHT_12_LUX" | "HARSH_BACKLIGHT_GLARE"
@@ -227,6 +233,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   const smootherRef = useRef(new LandmarkSmoother());
   const voterRef = useRef(new GestureVoter(9, 0.6, 0.35));
   const timeVoterRef = useRef(new TimeWeightedGestureVoter(350, 0.6, 0.35));
+  const intentionalityEngineRef = useRef(new IntentionalityEnsembleEngine());
   const intentRef = useRef(new IntentTracker());
   const errorsRef = useRef(new ErrorCollector());
   const sessionRef = useRef<string>("");
@@ -614,7 +621,8 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         bookHoldTestMode === "CASE_2_FREE_HAND_SIDE_PROFILE" ||
         bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH" ||
         bookHoldTestMode === "CASE_4_BOOK_COVER_SIDE_CLAMP" ||
-        bookHoldTestMode === "CASE_5_BOOK_SPINE_EDGE_HOLD"
+        bookHoldTestMode === "CASE_5_BOOK_SPINE_EDGE_HOLD" ||
+        bookHoldTestMode === "CASE_6_BARE_FIST_195931"
       ) {
         const baseCase = REAL_WORLD_FAILURE_CASES[bookHoldTestMode];
         const jx = Math.sin(2 * Math.PI * (user?.f0Hz || 5.2) * t) * (tremorInjectionAmp * 0.25);
@@ -645,11 +653,21 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     let vote: VoteResult | null = null;
 
     if (normLandmarks) {
-      const faceOverlapDetected = webcam
-        ? sceneRef.current.detectFaceNoseOverlap(normLandmarks)
-        : bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH";
+      const faceAndChin = webcam
+        ? sceneRef.current.detectFaceAndChinZone(normLandmarks)
+        : {
+            faceScratchDetected: bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH",
+            chinRestDetected: false,
+          };
+      const faceOverlapDetected = faceAndChin.faceScratchDetected;
       const apertureOccupancyRatio = webcam
         ? sceneRef.current.computeApertureObjectOccupancy(normLandmarks)
+        : undefined;
+      const skinDivergenceScore = webcam
+        ? sceneRef.current.computeKnuckleSkinDivergence(normLandmarks)
+        : undefined;
+      const protrudingEdgeLineScore = webcam
+        ? sceneRef.current.computeProtrudingEdgeLineScore(normLandmarks)
         : undefined;
       const foreignObjectDetected = webcam
         ? (apertureOccupancyRatio ?? 0) >= 0.45
@@ -659,6 +677,8 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         webcamMode: !!webcam,
         foreignObjectDetected,
         apertureOccupancyRatio,
+        skinDivergenceScore,
+        protrudingEdgeLineScore,
         localeCountryCode,
       });
       setHandParams(classification.handParams);
@@ -718,7 +738,34 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         }
       }
 
-      if (isBlockedGraspOrScratch || cctvGatedBlock) {
+      const intentMetrics = intentionalityEngineRef.current.evaluate({
+        landmarks: normLandmarks,
+        handParams: classification.handParams,
+        resolvedGesture: classification.gesture,
+        timestampMs: now,
+        inTransit: intent.transit,
+        velocity: intent.wristVelocity,
+        userDistracted: attention < 0.45,
+        faceScratchDetected: faceOverlapDetected,
+        chinRestDetected: faceAndChin.chinRestDetected,
+        allowChinProximity: cctvModeRef.current === "DIRECT_COMMAND",
+        isObjectGrasp: isBlockedGraspOrScratch,
+        cctvMode: cctvModeRef.current,
+        cctvWakeWindowOpen: cctvWakeUnlockedUntilRef.current > now,
+      });
+      if (frameCountRef.current % 3 === 0) {
+        setIntentEnsemble(intentMetrics);
+      }
+
+      const unintentionalPostureGated =
+        !intentMetrics.isIntentional &&
+        intentMetrics.status !== "INTENTIONAL_READY" &&
+        (cctvModeRef.current !== "DIRECT_COMMAND" ||
+          intentMetrics.status === "OUT_OF_CORRIDOR_OR_RESTING_HAND" ||
+          intentMetrics.status === "HOLD_PAUSED_LOOKING_AWAY" ||
+          intentMetrics.status === "CHIN_REST_OR_FACE_TOUCH_IGNORED");
+
+      if (isBlockedGraspOrScratch || cctvGatedBlock || unintentionalPostureGated) {
         voterRef.current.reset();
         timeVoterRef.current.reset();
         vote = voterRef.current.push("UNKNOWN");
@@ -1320,10 +1367,32 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
           <div className="text-[11px] font-mono text-slate-300">
             Status:{" "}
             <strong className={graspAnalysis?.isObjectGrasp ? "text-rose-300" : "text-emerald-300"}>
-              {graspAnalysis?.isObjectGrasp ? graspAnalysis.reason : "FREE-HAND VERIFIED"}
+              {graspAnalysis?.isObjectGrasp
+                ? graspAnalysis.reason
+                : graspAnalysis?.objectEnsemble?.isCanonicalBareFist
+                ? "BARE FIST IMMUNE (0% FP)"
+                : "FREE-HAND VERIFIED"}
             </strong>{" "}
-            · Bimodal: <strong>{graspAnalysis?.bimodalityScore ?? 0.92}</strong>
+            · S_obj: <strong>{graspAnalysis?.objectEnsemble?.ensembleScore ?? 0}</strong> (
+            {graspAnalysis?.objectEnsemble?.activeSignalCount ?? 0}/5)
           </div>
+          {intentEnsemble && (
+            <div className="text-[10px] font-mono text-slate-400">
+              Ensemble B (Intent):{" "}
+              <strong
+                className={
+                  intentEnsemble.status === "INTENTIONAL_READY"
+                    ? "text-cyan-300"
+                    : "text-amber-300"
+                }
+              >
+                {intentEnsemble.status === "INTENTIONAL_READY"
+                  ? `READY (${intentEnsemble.intentScore})`
+                  : `⏸️ ${intentEnsemble.status}`}
+              </strong>{" "}
+              [{intentEnsemble.activeIntentSignals}/5]
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-1 pt-0.5">
             {(
               [
@@ -1336,6 +1405,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
                 { id: "CASE_3_NOSE_TINGLING_SCRATCH", label: "👃 Nose Scratch" },
                 { id: "CASE_4_BOOK_COVER_SIDE_CLAMP", label: "📒 Side Book Cover" },
                 { id: "CASE_5_BOOK_SPINE_EDGE_HOLD", label: "📘 Book Spine Edge" },
+                { id: "CASE_6_BARE_FIST_195931", label: "✊ Bare Fist (195931 Fix)" },
               ] as const
             ).map((b) => (
               <button
@@ -1344,7 +1414,8 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
                 onClick={() => setBookHoldTestMode(b.id)}
                 className={`px-2 py-0.5 rounded text-[10px] font-mono border ${
                   bookHoldTestMode === b.id
-                    ? b.id === "CASE_2_FREE_HAND_SIDE_PROFILE"
+                    ? b.id === "CASE_2_FREE_HAND_SIDE_PROFILE" ||
+                      b.id === "CASE_6_BARE_FIST_195931"
                       ? "bg-emerald-500 text-slate-950 font-bold border-emerald-400"
                       : "bg-rose-500 text-white font-bold border-rose-400"
                     : "bg-slate-900 text-slate-300 border-slate-800"
