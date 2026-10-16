@@ -104,6 +104,7 @@ type Runtime = {
   lastDetectTs: number;
   lastTelemetry: number;
   lastHandTs: number;
+  lastLandmarks: HandLandmark2D[] | null;
 };
 
 export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
@@ -195,6 +196,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     lastDetectTs: 0,
     lastTelemetry: 0,
     lastHandTs: 0,
+    lastLandmarks: null as HandLandmark2D[] | null,
   });
   const sceneRef = useRef(new SceneAnalyzer());
   const smootherRef = useRef(new LandmarkSmoother());
@@ -462,13 +464,20 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             r.lastHandTs = now;
             const raw: HandLandmark2D[] = lm.map((p) => ({ x: p.x, y: p.y, z: p.z }));
             normLandmarks = smootherRef.current.smooth(raw, now);
+            r.lastLandmarks = normLandmarks;
             handPresent = true;
+          } else {
+            r.lastLandmarks = null;
+            handPresent = false;
           }
         } catch (e) {
           errorsRef.current.push(`detectForVideo: ${(e as Error).message}`, "vision");
         }
-      } else if (now - r.lastHandTs < 120 && smootherRef.current) {
-        handPresent = false;
+      } else if (now - r.lastHandTs < 150 && r.lastLandmarks) {
+        // Reuse latest smoothed landmarks on intermediate 60Hz animation frames
+        // when the 30Hz webcam video.currentTime has not yet advanced.
+        normLandmarks = r.lastLandmarks;
+        handPresent = true;
       }
     } else {
       ctx.fillStyle = sceneQuality < 0.35 ? "#020617" : "#090d16";
@@ -546,11 +555,19 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             reasons: [],
             score: 1,
           };
-      const voteGesture: RecognizedGesture =
-        classification.confidence < 0.5 || intent.transit
-          ? "UNKNOWN"
-          : classification.gesture;
-      vote = voterRef.current.push(voteGesture);
+      const isBlockedGraspOrScratch = Boolean(
+        classification.objectGraspAnalysis?.isObjectGrasp
+      );
+      if (isBlockedGraspOrScratch) {
+        voterRef.current.reset();
+        vote = voterRef.current.push("UNKNOWN");
+      } else {
+        const voteGesture: RecognizedGesture =
+          classification.confidence < 0.5 || intent.transit
+            ? "UNKNOWN"
+            : classification.gesture;
+        vote = voterRef.current.push(voteGesture);
+      }
       lastClassRef.current = {
         gesture: classification.gesture,
         confidence: classification.confidence,

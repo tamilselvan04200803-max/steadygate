@@ -96,10 +96,19 @@ function loadAdminModel(): AdminTrainedModelState {
   return def;
 }
 
+function atomicWriteJsonSync(targetPath: string, data: unknown): void {
+  ensureStorageDir();
+  const tmpPath = `${targetPath}.tmp.${process.pid}.${Date.now()}.${Math.random()
+    .toString(36)
+    .slice(2, 7)}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf8");
+  fs.renameSync(tmpPath, targetPath);
+}
+
 function saveAdminModel(model: AdminTrainedModelState): void {
   ensureStorageDir();
   model.updatedAt = new Date().toISOString();
-  fs.writeFileSync(MODEL_PATH, JSON.stringify(model, null, 2));
+  atomicWriteJsonSync(MODEL_PATH, model);
   setAdminTrainedModel(model);
 }
 
@@ -118,7 +127,7 @@ function loadAdminSamples(): AdminRecordedSample[] {
 function saveAdminSamples(samples: AdminRecordedSample[]): void {
   ensureStorageDir();
   const capped = samples.slice(0, 300);
-  fs.writeFileSync(SAMPLES_PATH, JSON.stringify(capped, null, 2));
+  atomicWriteJsonSync(SAMPLES_PATH, capped);
 }
 
 function dist(a: HandLandmark2D, b: HandLandmark2D): number {

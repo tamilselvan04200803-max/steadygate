@@ -35,6 +35,26 @@ Maintained by: 👤 `[Lead Architect Node]`
 
 ## [AD-2026-002] Multi-Agent Enterprise Workflow Matrix
 * **Status:** APPROVED
+* **Context:** The user requires a standalone, production-grade instructions file (`TEAM_WORK.md`) to establish high-performing, corporate-grade workspace operations across four simulated agent personas (`[Lead Architect]`, `[Implementation Eng]`, `[QA & Chaos Eng]`, `[Principal Reviewer]`) and the 15-Principal-Engineer Microsoft/Google Review Matrix.
+* **Decision:** Define a comprehensive, end-to-end framework enforcing standard software engineering patterns (Design Docs, CI/CD gates, chaos engineering, and zero-placeholder rule compliance).
+* **Impact:** Elevates the agent execution model to an institutional engineering standard, eliminating technical debt and ensuring absolute execution safety.
+
+## [AD-2026-003] Three Real-World Live Camera Failure Case Guards & Concurrency Hardening
+* **Status:** APPROVED
+* **Context:** Live webcam testing exposed three concrete failure cases captured in user screenshots:
+  1. **Failure Case 1 (`Screenshot 2026-10-16 114707.png` — Smartphone in Hand -> `POINTING_UP`)**: Holding a wide smartphone vertically with the thumb clamping the left edge (`d4_5 = 1.02`, `d4_10 = 1.62`, `d4_14 = 1.75`, `cApertureRatio = 1.53`) and the index finger resting extended along the top edge (`idx = 0.88`) bypassed existing object-grasp guards (which assumed `fourMax < 0.62`) and falsely triggered `POINTING_UP`.
+  2. **Failure Case 2 (`Screenshot 2026-10-16 114648.png` — Side-Profile Free Hand -> `PALM_OCCLUDED_BY_OBJECT`)**: Holding an empty free hand in natural 3D radial side profile caused the 4 MCP joints (`5, 9, 13, 17`) to align along the camera axis (`aspect = 4.79 > 3.6`), falsely triggering Guard 1 (`PALM_OCCLUDED_BY_OBJECT`) despite all 4 fingers being cleanly extended (`fourMin = 0.83 >= 0.72`, `palmLen = 0.30 >= 0.22`) with natural radial profile curvature.
+  3. **Failure Case 3 (`Screenshot 2026-10-16 121013.png` — Nose Tingling / Face Scratching -> `FIST`)**: Touching/scratching the nose with knuckles near the nose bridge (`mIdx = 8.8°`, `mMid = 13.3°`, acute MCP fold back toward the wrist) and straight PIP segments (`sIdx = 177.6°`, `sMid = 165.2°`) hanging downward over the face produced low radial finger reach (`fourMean = 0.06`) and falsely triggered `FIST`.
+* **Decision:**
+  1. **Guard 6 (`WIDE_PHONE_OR_OBJECT_CLASP`)**: Block any posture where the thumb opposes the MCP/PIP knuckle line across a wide object span (`d4_5 > 0.72 && d4_10 > 1.10 && d4_14 > 1.10 && Math.max(mid, rng, pnk) < 0.45`), even when the index finger is extended along the top of the phone.
+  2. **Side-Profile Free-Hand Exemption in Guard 1**: Exempt natural 3D radial/ulnar side-profile free hands (`aspect > 3.6 && aspect <= 6.2 && palmLen >= 0.22 && fourMin >= 0.70 && Math.abs(landmarks[9].x - wrist.x) / palmLen >= 0.28`) from `PALM_OCCLUDED_BY_OBJECT` so sideways open hands are recognized cleanly without false object-grasp blocks.
+  3. **Guard 7 (`CASUAL_FACE_TOUCH_OR_SCRATCH`) + Live Face/Nose ROI Overlap Guard**:
+     - Biomechanically reject downward-hanging dorsal/claw face-scratching postures (`Math.min(mIdx, mMid) < 45 && Math.max(sIdx, sMid) > 0.65 && fourMean < 0.35`, OR `faceOverlapDetected === true`), returning `isObjectGrasp: true, reason: "CASUAL_FACE_TOUCH_OR_SCRATCH"` (forced to `UNKNOWN` with `0%` trigger).
+     - Add real-time Face/Nose ROI overlap detection in `SceneAnalyzer` (`src/lib/vision-runtime.ts`) and `LiveCameraStream.tsx` to detect when the hand bounding box overlaps the upper-central face/head skin cluster and block accidental face-touching commands.
+
+
+## [AD-2026-002] Multi-Agent Enterprise Workflow Matrix
+* **Status:** APPROVED
 * **Context:** The user requires a standalone, production-grade instructions file (`TEAM_WORK.md`) to establish high-performing, corporate-grade workspace operations across four simulated agent personas (`[Lead Architect]`, `[Implementation Eng]`, `[QA & Chaos Eng]`, `[Principal Reviewer]`).
 * **Decision:** Define a comprehensive, end-to-end framework enforcing standard software engineering patterns (Design Docs, CI/CD gates, chaos engineering, and zero-placeholder rule compliance).
 * **Impact:** Elevates the agent execution model to an institutional engineering standard, eliminating technical debt and ensuring absolute execution safety.
