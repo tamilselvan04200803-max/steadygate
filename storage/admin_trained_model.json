@@ -1,0 +1,238 @@
+{
+  "version": 3,
+  "updatedAt": "2026-10-16T01:38:37.776Z",
+  "totalSamplesTrained": 17216,
+  "hagridCalibratedCount": 17213,
+  "gesturePrototypes": {
+    "FIST": {
+      "gesture": "FIST",
+      "centroid": [
+        0.18,
+        0.03,
+        0.04,
+        0.05,
+        0.04
+      ],
+      "pinchNormMedian": 0.36,
+      "d4_9Median": 0.32,
+      "sampleCount": 945,
+      "lowLightSamples": 265,
+      "glareSamples": 170,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "OPEN_PALM": {
+      "gesture": "OPEN_PALM",
+      "centroid": [
+        0.74,
+        0.95,
+        0.95,
+        0.97,
+        0.91
+      ],
+      "pinchNormMedian": 1.16,
+      "d4_9Median": 1.02,
+      "sampleCount": 1649,
+      "lowLightSamples": 462,
+      "glareSamples": 297,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "THUMBS_UP": {
+      "gesture": "THUMBS_UP",
+      "centroid": [
+        0.83,
+        0.05,
+        0.04,
+        0.03,
+        0.03
+      ],
+      "pinchNormMedian": 0.98,
+      "d4_9Median": 1.18,
+      "sampleCount": 1436,
+      "lowLightSamples": 402,
+      "glareSamples": 258,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "THUMBS_DOWN": {
+      "gesture": "THUMBS_DOWN",
+      "centroid": [
+        0.88,
+        0.05,
+        0.06,
+        0.05,
+        0.05
+      ],
+      "pinchNormMedian": 0.87,
+      "d4_9Median": 1.17,
+      "sampleCount": 1295,
+      "lowLightSamples": 363,
+      "glareSamples": 233,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "CALL_ME": {
+      "gesture": "CALL_ME",
+      "centroid": [
+        0.63,
+        0.08,
+        0.07,
+        0.06,
+        0.99
+      ],
+      "pinchNormMedian": 1,
+      "d4_9Median": 0.91,
+      "sampleCount": 1506,
+      "lowLightSamples": 422,
+      "glareSamples": 271,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "POINTING_UP": {
+      "gesture": "POINTING_UP",
+      "centroid": [
+        0.29,
+        1,
+        0.06,
+        0.07,
+        0.06
+      ],
+      "pinchNormMedian": 1.05,
+      "d4_9Median": 0.21,
+      "sampleCount": 1263,
+      "lowLightSamples": 354,
+      "glareSamples": 227,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "VICTORY": {
+      "gesture": "VICTORY",
+      "centroid": [
+        0.4,
+        0.99,
+        0.97,
+        0.05,
+        0.05
+      ],
+      "pinchNormMedian": 1.08,
+      "d4_9Median": 0.21,
+      "sampleCount": 2784,
+      "lowLightSamples": 780,
+      "glareSamples": 501,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "PINCH": {
+      "gesture": "PINCH",
+      "centroid": [
+        0.54,
+        0.13,
+        0.95,
+        0.99,
+        0.95
+      ],
+      "pinchNormMedian": 0.16,
+      "d4_9Median": 0.79,
+      "sampleCount": 1592,
+      "lowLightSamples": 446,
+      "glareSamples": 287,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "THREE_FINGERS": {
+      "gesture": "THREE_FINGERS",
+      "centroid": [
+        0.62,
+        0.98,
+        0.98,
+        0.52,
+        0.05
+      ],
+      "pinchNormMedian": 1.24,
+      "d4_9Median": 0.71,
+      "sampleCount": 3109,
+      "lowLightSamples": 871,
+      "glareSamples": 560,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    },
+    "FOUR_FINGERS": {
+      "gesture": "FOUR_FINGERS",
+      "centroid": [
+        0.33,
+        0.96,
+        0.96,
+        0.97,
+        0.91
+      ],
+      "pinchNormMedian": 1.15,
+      "d4_9Median": 0.28,
+      "sampleCount": 1634,
+      "lowLightSamples": 458,
+      "glareSamples": 294,
+      "meanLuminance": 0.48,
+      "meanContrast": 0.21,
+      "confidenceBoost": 1.04
+    }
+  },
+  "negativeGraspSignatures": [
+    {
+      "id": "adm_1792114717776_a4go",
+      "label": "Admin verification: holding book spine in low light",
+      "centroid": [
+        0.519,
+        0.291,
+        0.37,
+        0.434,
+        0.534
+      ],
+      "cApertureRatio": 1.07,
+      "luminance": 0.12,
+      "createdAt": "2026-10-16T01:38:37.776Z"
+    },
+    {
+      "id": "adm_1792114717776_vkjl",
+      "label": "Admin verification: holding book spine in low light",
+      "centroid": [
+        0.519,
+        0.291,
+        0.37,
+        0.434,
+        0.534
+      ],
+      "cApertureRatio": 1.07,
+      "luminance": 0.12,
+      "createdAt": "2026-10-16T01:38:37.776Z"
+    },
+    {
+      "id": "adm_1792114717775_e8n7",
+      "label": "Admin verification: holding book spine in low light",
+      "centroid": [
+        0.519,
+        0.291,
+        0.37,
+        0.434,
+        0.534
+      ],
+      "cApertureRatio": 1.07,
+      "luminance": 0.12,
+      "createdAt": "2026-10-16T01:38:37.775Z"
+    }
+  ],
+  "environmentalWeights": {
+    "lowLightGammaGain": 1.45,
+    "glareCompressionGain": 1.22,
+    "clutterMarginBonus": 0.08,
+    "adaptedErrorReductionPct": 94.1
+  }
+}

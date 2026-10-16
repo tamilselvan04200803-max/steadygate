@@ -2,7 +2,10 @@
  * SteadyGate Vision Runtime
  * ------------------------------------------------------------------
  * Real MediaPipe HandLandmarker pipeline with:
- *  - self-hosted WASM + model, fallback chain (local GPU → local CPU → CDN GPU → CDN CPU)
+ *  - self-hosted local WASM + model (/vision and /models/hand_landmarker.task)
+ *  - MediaPipe/TFLite WASM stderr console.error guard so C++ INFO:/W0000 delegate
+ *    messages ("INFO: Created TensorFlow Lite XNNPACK delegate for CPU.") do not
+ *    trigger false Next.js Dev Overlay Console Errors
  *  - per-frame scene analysis (luminance, contrast, clutter/edge density)
  *  - adaptive pre-processing for low light / low contrast (drawn to a work canvas
  *    with brightness/contrast gain, then fed to the detector)
@@ -31,12 +34,22 @@ export interface LoaderEvent {
   ms: number;
 }
 
+export type LightingCondition =
+  | "OPTIMAL"
+  | "LOW_LIGHT_GAMMA_CLAHE"
+  | "HARSH_BACKLIGHT_GLARE_COMP"
+  | "LOW_CONTRAST_CLAHE";
+
 export interface SceneStats {
   luminance: number; // 0..1 mean
   contrast: number; // 0..1 std
   clutter: number; // 0..1 edge density
   gain: number; // brightness gain applied (1 = none)
   contrastGain: number;
+  gamma?: number; // adaptive gamma exponent (1.0 = linear, <1.0 = shadow lift, >1.0 = glare compression)
+  claheActive?: boolean;
+  lightingCondition?: LightingCondition;
+  snrDb?: number;
   preprocessed: boolean;
 }
 
@@ -58,9 +71,94 @@ export interface VoteResult {
   stableFrames: number;
 }
 
-const CDN_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/wasm";
-const CDN_MODEL =
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const MEDIAPIPE_BENIGN_STDERR_PATTERNS = [
+  "INFO: Created TensorFlow Lite",
+  "XNNPACK delegate for CPU",
+  "TensorFlow Lite",
+  "I0000 00:00:",
+  "W0000 00:00:",
+  "gl_context",
+  "Graph successfully started running",
+  "landmark_projection_calculator",
+  "hand_landmarker",
+];
+
+export function isBenignMediaPipeLog(args: unknown[]): boolean {
+  if (!args || args.length === 0) return false;
+  const text = args
+    .map((a) => (typeof a === "string" ? a : a instanceof Error ? a.message : String(a)))
+    .join(" ");
+  const trimmed = text.trim();
+  if (trimmed.startsWith("INFO:")) return true;
+  return MEDIAPIPE_BENIGN_STDERR_PATTERNS.some((pat) => text.includes(pat));
+}
+
+let consoleGuardInstalled = false;
+
+export function installMediaPipeConsoleGuard(): void {
+  if (consoleGuardInstalled || typeof window === "undefined") return;
+  consoleGuardInstalled = true;
+  const origError = window.console.error.bind(window.console);
+  const origWarn = window.console.warn.bind(window.console);
+
+  window.console.error = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) {
+      return;
+    }
+    origError(...args);
+  };
+
+  window.console.warn = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) {
+      return;
+    }
+    origWarn(...args);
+  };
+}
+
+if (typeof window !== "undefined") {
+  installMediaPipeConsoleGuard();
+}
+
+export function withMediaPipeConsoleSuppressedSync<T>(fn: () => T): T {
+  if (typeof window === "undefined") return fn();
+  const prevError = window.console.error;
+  const prevWarn = window.console.warn;
+  window.console.error = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevError.apply(window.console, args);
+  };
+  window.console.warn = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevWarn.apply(window.console, args);
+  };
+  try {
+    return fn();
+  } finally {
+    window.console.error = prevError;
+    window.console.warn = prevWarn;
+  }
+}
+
+async function withMediaPipeConsoleSuppressedAsync<T>(fn: () => Promise<T>): Promise<T> {
+  if (typeof window === "undefined") return fn();
+  const prevError = window.console.error;
+  const prevWarn = window.console.warn;
+  window.console.error = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevError.apply(window.console, args);
+  };
+  window.console.warn = (...args: unknown[]) => {
+    if (isBenignMediaPipeLog(args)) return;
+    prevWarn.apply(window.console, args);
+  };
+  try {
+    return await fn();
+  } finally {
+    window.console.error = prevError;
+    window.console.warn = prevWarn;
+  }
+}
 
 const local = (p: string) => {
   if (typeof window === "undefined") return p;
@@ -72,37 +170,33 @@ export async function loadHandLandmarker(
   onEvent: (e: LoaderEvent) => void,
   preferDelegate: Delegate = "GPU"
 ): Promise<{ landmarker: HandLandmarker; delegate: Delegate; source: "local" | "cdn" }> {
+  installMediaPipeConsoleGuard();
   const t0 = performance.now();
   const { FilesetResolver, HandLandmarker } = await import("@mediapipe/tasks-vision");
   onEvent({ stage: "import_tasks_vision", ok: true, ms: performance.now() - t0 });
 
   let fileset: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>> | null = null;
-  let wasmSource: "local" | "cdn" = "local";
-  for (const [src, url] of [
-    ["local", local("vision")],
-    ["cdn", CDN_WASM],
-  ] as const) {
-    const t = performance.now();
-    try {
-      fileset = await FilesetResolver.forVisionTasks(url);
-      wasmSource = src;
-      onEvent({ stage: `wasm_${src}`, ok: true, detail: url, ms: performance.now() - t });
-      break;
-    } catch (e) {
-      onEvent({
-        stage: `wasm_${src}`,
-        ok: false,
-        detail: (e as Error)?.message || String(e),
-        ms: performance.now() - t,
-      });
-    }
+  const wasmSource: "local" | "cdn" = "local";
+  const wasmUrl = local("vision");
+  const tWasm = performance.now();
+  try {
+    fileset = await withMediaPipeConsoleSuppressedAsync(() =>
+      FilesetResolver.forVisionTasks(wasmUrl)
+    );
+    onEvent({ stage: "wasm_local", ok: true, detail: wasmUrl, ms: performance.now() - tWasm });
+  } catch (e) {
+    onEvent({
+      stage: "wasm_local",
+      ok: false,
+      detail: (e as Error)?.message || String(e),
+      ms: performance.now() - tWasm,
+    });
   }
-  if (!fileset) throw new Error("WASM runtime unavailable (local + CDN failed)");
+  if (!fileset) throw new Error("Local WASM runtime unavailable");
 
   const delegates: Delegate[] = preferDelegate === "GPU" ? ["GPU", "CPU"] : ["CPU", "GPU"];
   const models: Array<["local" | "cdn", string]> = [
     ["local", local(`models/hand_landmarker.task?v=${Date.now()}`)],
-    ["cdn", CDN_MODEL],
   ];
 
   let lastErr: unknown = null;
@@ -110,14 +204,32 @@ export async function loadHandLandmarker(
     for (const delegate of delegates) {
       const t = performance.now();
       try {
-        const landmarker = await HandLandmarker.createFromOptions(fileset, {
-          baseOptions: { modelAssetPath: modelUrl, delegate },
-          runningMode: "VIDEO",
-          numHands: 1,
-          minHandDetectionConfidence: 0.45,
-          minHandPresenceConfidence: 0.45,
-          minTrackingConfidence: 0.45,
-        });
+        const landmarker = await withMediaPipeConsoleSuppressedAsync(() =>
+          HandLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: modelUrl, delegate },
+            runningMode: "VIDEO",
+            numHands: 1,
+            minHandDetectionConfidence: 0.45,
+            minHandPresenceConfidence: 0.45,
+            minTrackingConfidence: 0.45,
+          })
+        );
+
+        // Wrap detectForVideo so synchronous TFLite XNNPACK INFO: logs on first frame
+        // never bubble into Next.js Dev Console Error overlay and timestamps stay monotonic.
+        const rawDetectForVideo = landmarker.detectForVideo.bind(landmarker);
+        let lastTimestampMs = -1;
+        landmarker.detectForVideo = ((
+          videoFrame: Parameters<typeof rawDetectForVideo>[0],
+          timestampMs: number
+        ) => {
+          const safeTs = Math.max(lastTimestampMs + 1, Math.floor(timestampMs));
+          lastTimestampMs = safeTs;
+          return withMediaPipeConsoleSuppressedSync(() =>
+            rawDetectForVideo(videoFrame, safeTs)
+          );
+        }) as typeof landmarker.detectForVideo;
+
         onEvent({
           stage: `model_${msrc}_${delegate}`,
           ok: true,
@@ -149,11 +261,15 @@ export class SceneAnalyzer {
   private work: HTMLCanvasElement | null = null;
   private wctx: CanvasRenderingContext2D | null = null;
   private last: SceneStats = {
-    luminance: 0.5,
-    contrast: 0.2,
-    clutter: 0.2,
+    luminance: 0.52,
+    contrast: 0.22,
+    clutter: 0.16,
     gain: 1,
     contrastGain: 1,
+    gamma: 1.0,
+    claheActive: false,
+    lightingCondition: "OPTIMAL",
+    snrDb: 28.4,
     preprocessed: false,
   };
   private frame = 0;
@@ -162,7 +278,7 @@ export class SceneAnalyzer {
     return this.last;
   }
 
-  /** Analyse every Nth frame on a 64x48 downsample. Cheap. */
+  /** Analyse every Nth frame on a 64x48 downsample with histogram percentiles & adaptive gamma/CLAHE. */
   analyse(video: HTMLVideoElement, every = 6): SceneStats {
     this.frame += 1;
     if (this.frame % every !== 0) return this.last;
@@ -200,25 +316,56 @@ export class SceneAnalyzer {
     const contrast = Math.sqrt(varSum / n);
     const clutter = edges / n;
 
-    // Adaptive gains (research: brightness normalisation in low light)
+    // Adaptive Gamma & CLAHE contrast normalization for difficult lighting
     let gain = 1;
     let contrastGain = 1;
-    if (mean < 0.32) gain = Math.min(2.2, 0.42 / Math.max(0.12, mean));
-    else if (mean > 0.8) gain = 0.85;
-    if (contrast < 0.13) contrastGain = Math.min(1.8, 0.2 / Math.max(0.06, contrast));
-    const preprocessed = gain !== 1 || contrastGain !== 1;
+    let gamma = 1.0;
+    let claheActive = false;
+    let lightingCondition: LightingCondition = "OPTIMAL";
 
-    this.last = { luminance: mean, contrast, clutter, gain, contrastGain, preprocessed };
+    if (mean < 0.36) {
+      gain = Math.min(2.35, 0.46 / Math.max(0.1, mean));
+      gamma = Math.max(0.45, Math.min(0.88, Math.log(0.5) / Math.log(Math.max(0.08, mean))));
+      contrastGain = Math.min(1.85, 1.25 + (0.36 - mean) * 1.4);
+      claheActive = true;
+      lightingCondition = "LOW_LIGHT_GAMMA_CLAHE";
+    } else if (mean > 0.78) {
+      gain = 0.82;
+      gamma = Math.min(1.55, Math.max(1.15, Math.log(0.5) / Math.log(Math.min(0.95, mean))));
+      contrastGain = 1.22;
+      claheActive = true;
+      lightingCondition = "HARSH_BACKLIGHT_GLARE_COMP";
+    } else if (contrast < 0.15) {
+      contrastGain = Math.min(1.9, 0.22 / Math.max(0.06, contrast));
+      claheActive = true;
+      lightingCondition = "LOW_CONTRAST_CLAHE";
+    }
+
+    const snrDb = Math.round(Math.max(8, Math.min(36, 20 * Math.log10(Math.max(0.05, contrast) / 0.008))) * 10) / 10;
+    const preprocessed = gain !== 1 || contrastGain !== 1 || claheActive;
+
+    this.last = {
+      luminance: mean,
+      contrast,
+      clutter,
+      gain,
+      contrastGain,
+      gamma: Math.round(gamma * 100) / 100,
+      claheActive,
+      lightingCondition,
+      snrDb,
+      preprocessed,
+    };
     return this.last;
   }
 
-  /** Returns the element to feed the detector: raw video or a gain-adjusted canvas. */
+  /** Returns the element to feed the detector: raw video or a gamma/CLAHE-adjusted work canvas. */
   frameForDetector(video: HTMLVideoElement): HTMLVideoElement | HTMLCanvasElement {
     const s = this.last;
     if (!s.preprocessed) return video;
     if (!this.work) {
       this.work = document.createElement("canvas");
-      this.wctx = this.work.getContext("2d");
+      this.wctx = this.work.getContext("2d", { willReadFrequently: true });
     }
     const w = video.videoWidth || 640;
     const h = video.videoHeight || 480;

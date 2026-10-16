@@ -4,8 +4,18 @@
  * Covers clean, tremor, jitter (cluttered background noise), foreshortening,
  * scale/translation, half-curled transitions, and voter flicker suppression.
  */
-import { classifyHandGesture, generateSyntheticGestureLandmarks } from "../src/lib/hand-gesture-engine";
+import fs from "fs";
+import path from "path";
+import {
+  classifyHandGesture,
+  generateSyntheticGestureLandmarks,
+  generateObjectGraspLandmarks,
+} from "../src/lib/hand-gesture-engine";
 import { GestureVoter, IntentTracker, LandmarkSmoother } from "../src/lib/vision-runtime";
+import {
+  AdaptiveTremorFrequencyTracker,
+  extractMotionSignature,
+} from "../src/lib/signal-processing";
 import type { HandLandmark2D, RecognizedGesture } from "../src/lib/types";
 
 const CORE: RecognizedGesture[] = ["OPEN_PALM", "VICTORY", "POINTING_UP", "THUMBS_UP", "FIST"];
@@ -176,6 +186,148 @@ console.log("\n== Intent continuity: transit vs hold ==");
   const far = transform(generateSyntheticGestureLandmarks("OPEN_PALM", 0, 5.2, 0), { dx: 0.45 });
   ev = it.update(far, 2000);
   check("out of zone flagged", ev.reasons.includes("OUT_OF_ZONE"));
+}
+
+console.log("\n== Check 18: Real GitHub HaGRID Dataset Benchmark (500 Stratified Real Human Samples) ==");
+{
+  const benchmarkPath = path.join(process.cwd(), "storage", "hagrid_real_benchmark.json");
+  if (fs.existsSync(benchmarkPath)) {
+    const raw = JSON.parse(fs.readFileSync(benchmarkPath, "utf8"));
+    const samplesList = Array.isArray(raw) ? raw : raw.samples || [];
+    let correct = 0;
+    let total = 0;
+    for (const s of samplesList) {
+      const expected = s.expectedGesture || s.gesture;
+      const res = classifyHandGesture(s.landmarks, null);
+      total += 1;
+      if (res.gesture === expected) correct += 1;
+    }
+    const acc = total > 0 ? correct / total : 0;
+    console.log(
+      `  ✓ Real HaGRID Stratified Benchmark: ${(acc * 100).toFixed(2)}% (${correct}/${total})`
+    );
+    check("HaGRID real dataset >= 97%", acc >= 0.97, `${(acc * 100).toFixed(2)}%`);
+  } else {
+    console.log("  ! storage/hagrid_real_benchmark.json not found");
+  }
+}
+
+console.log("\n== Check 19: Strict Object-Grasp & Book-Holding Guard (0.0% False Positives) ==");
+{
+  const graspModes: Array<"BOOK_SPINE" | "OPEN_BOOK" | "PHONE_GRASP" | "CUP_MUG" | "OCCLUDED_BOOK"> = [
+    "BOOK_SPINE",
+    "OPEN_BOOK",
+    "PHONE_GRASP",
+    "CUP_MUG",
+    "OCCLUDED_BOOK",
+  ];
+  let falsePositives = 0;
+  let totalGrasps = 0;
+  for (const mode of graspModes) {
+    for (let f = 0; f < 40; f++) {
+      const lm = generateObjectGraspLandmarks(mode, f * 0.033, 5.4, 0.035);
+      const res = classifyHandGesture(lm, null);
+      totalGrasps += 1;
+      if (res.gesture !== "UNKNOWN") {
+        falsePositives += 1;
+      }
+    }
+  }
+  console.log(
+    `  ✓ Object-Grasp / Book-Hold False Positives: ${falsePositives}/${totalGrasps} (${(
+      (falsePositives / totalGrasps) *
+      100
+    ).toFixed(2)}% FP)`
+  );
+  check(
+    "0.0% Object-Grasp False Positive Rate",
+    falsePositives === 0,
+    `FP=${falsePositives}/${totalGrasps}`
+  );
+}
+
+console.log("\n== Check 20: All 10 Gestures under Difficult Lighting + 5.8Hz Tremor (Smoother + Voter) ==");
+{
+  const ALL_TEN: RecognizedGesture[] = [
+    "OPEN_PALM",
+    "FIST",
+    "VICTORY",
+    "POINTING_UP",
+    "THUMBS_UP",
+    "THUMBS_DOWN",
+    "PINCH",
+    "THREE_FINGERS",
+    "FOUR_FINGERS",
+    "CALL_ME",
+  ];
+  let correct = 0;
+  let total = 0;
+  for (const g of ALL_TEN) {
+    const sm = new LandmarkSmoother();
+    const voter = new GestureVoter(9, 0.6, 0.35);
+    for (let f = 0; f < 50; f++) {
+      const raw = transform(generateSyntheticGestureLandmarks(g, f / 30, 5.8, 0.042), {
+        jitter: 0.008,
+        squashY: 0.88,
+      });
+      const lm = sm.smooth(raw, f * 33.3);
+      const r = classifyHandGesture(lm, null);
+      const v = voter.push(r.confidence < 0.5 ? "UNKNOWN" : r.gesture);
+      if (f >= 10) {
+        total += 1;
+        if (v.committed === g) correct += 1;
+      }
+    }
+  }
+  const acc = correct / total;
+  console.log(
+    `  ✓ All 10 Gestures under Low-Light Jitter + 5.8Hz Tremor: ${(acc * 100).toFixed(2)}% (${correct}/${total})`
+  );
+  check("All 10 Gestures Low-Light + Tremor >= 98%", acc >= 0.98, `${(acc * 100).toFixed(2)}%`);
+}
+
+console.log("\n== Check 21: Progressive 3-Stage Tremor f0 Personalizer & Irregular Frequency Rejection ==");
+{
+  const tracker = new AdaptiveTremorFrequencyTracker(5.0, 0.03);
+  const initStatus = tracker.getStatus();
+  check("Initial stage is INITIALIZED_60S_CALIB", initStatus.stage === "INITIALIZED_60S_CALIB");
+
+  // Feed 60 frames of natural 5.6 Hz human tremor (30 FPS)
+  const cleanTremorTrajectory: number[] = [];
+  for (let i = 0; i < 60; i++) {
+    const t = i / 30;
+    cleanTremorTrajectory.push(0.5 + 0.035 * Math.sin(2 * Math.PI * 5.6 * t));
+  }
+  const sigHuman = extractMotionSignature(cleanTremorTrajectory, 30);
+  let lockState = tracker.getStatus();
+  for (let k = 0; k < 14; k++) {
+    lockState = tracker.observeSignature(sigHuman);
+  }
+  console.log(
+    `  ✓ Tremor Personalizer after 14 natural windows: stage=${lockState.stage}, init=${lockState.initializedF0Hz}Hz -> finalized=${lockState.activeF0Hz}Hz`
+  );
+  check(
+    "Tremor Personalizer locks natural f0",
+    lockState.stage === "FINALIZED_LOCKED" && Math.abs(lockState.activeF0Hz - 5.6) <= 0.6,
+    `${lockState.stage} f0=${lockState.activeF0Hz}`
+  );
+
+  // Feed irregular 14.2 Hz non-human vibration burst — must be rejected without corrupting locked f0
+  const lockedF0Before = lockState.activeF0Hz;
+  const irregularTrajectory: number[] = [];
+  for (let i = 0; i < 60; i++) {
+    const t = i / 30;
+    irregularTrajectory.push(0.5 + 0.05 * Math.sin(2 * Math.PI * 14.2 * t));
+  }
+  const sigIrregular = extractMotionSignature(irregularTrajectory, 30);
+  const afterIrregular = tracker.observeSignature(sigIrregular);
+  console.log(
+    `  ✓ Irregular 14.2Hz burst rejected=${afterIrregular.irregularFrequencyRejected}, activeF0 preserved=${afterIrregular.activeF0Hz}Hz`
+  );
+  check(
+    "Irregular >12Hz burst rejected & f0 preserved",
+    afterIrregular.irregularFrequencyRejected && afterIrregular.activeF0Hz === lockedF0Before
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

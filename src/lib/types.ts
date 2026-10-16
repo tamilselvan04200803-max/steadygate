@@ -10,6 +10,9 @@ export type RecognizedGesture =
   | "FIST"
   | "THUMBS_DOWN"
   | "PINCH"
+  | "CALL_ME"
+  | "THREE_FINGERS"
+  | "FOUR_FINGERS"
   | "UNKNOWN";
 
 export type RejectCode =
