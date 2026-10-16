@@ -9,6 +9,7 @@ import {
   generateObjectGraspLandmarks,
   generateSyntheticGestureLandmarks,
   HAGRID_TRAINED_PROTOTYPES,
+  sanitizeAdminModelNegativeSignatures,
   setAdminTrainedModel,
 } from "@/lib/hand-gesture-engine";
 import { ExtractedFrameTelemetry, HandLandmark2D, RecognizedGesture } from "@/lib/types";
@@ -134,14 +135,15 @@ function loadAdminModel(): AdminTrainedModelState {
   ensureStorageDir();
   try {
     if (fs.existsSync(MODEL_PATH)) {
-      const parsed = JSON.parse(fs.readFileSync(MODEL_PATH, "utf8")) as AdminTrainedModelState;
+      const raw = JSON.parse(fs.readFileSync(MODEL_PATH, "utf8")) as AdminTrainedModelState;
+      const parsed = sanitizeAdminModelNegativeSignatures(raw);
       setAdminTrainedModel(parsed);
       return parsed;
     }
   } catch {
     // Fallback to default
   }
-  const def = createDefaultAdminModel();
+  const def = sanitizeAdminModelNegativeSignatures(createDefaultAdminModel());
   fs.writeFileSync(MODEL_PATH, JSON.stringify(def, null, 2));
   setAdminTrainedModel(def);
   return def;
@@ -158,9 +160,10 @@ function atomicWriteJsonSync(targetPath: string, data: unknown): void {
 
 function saveAdminModel(model: AdminTrainedModelState): void {
   ensureStorageDir();
-  model.updatedAt = new Date().toISOString();
-  atomicWriteJsonSync(MODEL_PATH, model);
-  setAdminTrainedModel(model);
+  const cleanModel = sanitizeAdminModelNegativeSignatures(model);
+  cleanModel.updatedAt = new Date().toISOString();
+  atomicWriteJsonSync(MODEL_PATH, cleanModel);
+  setAdminTrainedModel(cleanModel);
 }
 
 function loadAdminSamples(): AdminRecordedSample[] {
@@ -447,18 +450,37 @@ export async function POST(req: Request) {
         newlyAdded.push(rec);
 
         if (adminLabel === "BOOK_HOLD_NEGATIVE" || adminLabel === "UNKNOWN") {
-          model.negativeGraspSignatures.unshift({
-            id: rec.id,
-            label: notes || "Book / Object Hold (Admin Blocked)",
-            centroid: rec.fingerFlexion,
-            cApertureRatio: cAperture,
-            luminance: rec.luminance,
-            createdAt: rec.timestamp,
-          });
-          if (model.negativeGraspSignatures.length > 40) {
-            model.negativeGraspSignatures.pop();
+          const fourAvg =
+            (rec.fingerFlexion[1] +
+              rec.fingerFlexion[2] +
+              rec.fingerFlexion[3] +
+              rec.fingerFlexion[4]) /
+            4.0;
+          // Only record as negative grasp signature if the 4 fingers are genuinely flexed/curled (<= 0.65)
+          if (fourAvg <= 0.65) {
+            model.negativeGraspSignatures.unshift({
+              id: rec.id,
+              label: notes || "Book / Object Hold (Admin Blocked)",
+              centroid: rec.fingerFlexion,
+              cApertureRatio: cAperture,
+              luminance: rec.luminance,
+              createdAt: rec.timestamp,
+            });
+            if (model.negativeGraspSignatures.length > 40) {
+              model.negativeGraspSignatures.pop();
+            }
           }
         } else {
+          // Sub-task 1.2: Automatically prune any stored BOOK_HOLD_NEGATIVE signature whose L1
+          // flexion distance to this newly recorded positive sample is < 0.28
+          model.negativeGraspSignatures = model.negativeGraspSignatures.filter((neg) => {
+            const c = neg.centroid || (neg as unknown as { fingerFlexion?: number[] }).fingerFlexion;
+            if (!Array.isArray(c) || c.length !== 5) return false;
+            const l1 =
+              c.reduce((acc, v, idx) => acc + Math.abs(v - rec.fingerFlexion[idx]), 0) / 5.0;
+            return l1 >= 0.28;
+          });
+
           const gKey = adminLabel as Exclude<RecognizedGesture, "UNKNOWN">;
           const existing = model.gesturePrototypes[gKey] || {
             gesture: gKey,

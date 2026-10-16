@@ -73,7 +73,6 @@ export function upsertPersonalizedUserStorage(userRecord: Record<string, unknown
   existing.updatedAt = new Date().toISOString();
 
   writeJsonStorage("users_personalized.json", existing);
-  writeJsonStorage(`user_${userId}_profile.json`, merged);
 }
 
 export function saveAppliancesStorageSnapshot(appliancesList: unknown[]): void {

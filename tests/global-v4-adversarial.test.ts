@@ -29,12 +29,14 @@ import {
   generateSyntheticGestureLandmarks,
   generateObjectGraspLandmarks,
   REAL_WORLD_FAILURE_CASES,
+  setActiveAdminModel,
+  getAdminTrainedModel,
 } from "../src/lib/hand-gesture-engine";
 import {
   MONK_SKIN_TONE_RGB_REFERENCE,
   AdaptiveSkinCalibrator,
 } from "../src/lib/vision/skin-calibrator";
-import { SceneAnalyzer } from "../src/lib/vision-runtime";
+import { SceneAnalyzer, IntentTracker } from "../src/lib/vision-runtime";
 import { TimeWeightedGestureVoter } from "../src/lib/voter/time-weighted-voter";
 import {
   SafetyChordEngine,
@@ -674,6 +676,154 @@ async function runGlobalV4Suite() {
     "G9.5 Phase 3 ExtractedFrameTelemetry contains complete non-dummy mathematical biomechanics & optics",
     `gesture=${openTelemetry.classification.resolvedGesture}, handSize=${openTelemetry.biomechanics.normalHandSize}, distEst=${openTelemetry.biomechanics.handDistanceEstimate}`
   );
+
+  // G9.6 Phase 1 Sub-tasks 1.1–1.4: Admin-Trained OPEN_PALM Positive-Prototype Override,
+  // Poisoned Negative-Signature Auto-Pruning (L1 < 0.28), & Lateral Suppression against Margin Collapse
+  {
+    const prevModel = getAdminTrainedModel();
+    const screenshotOpenPalm: HandLandmark2D[] = [
+      { x: 0.480, y: 0.858 }, // 0 wrist
+      { x: 0.382, y: 0.798 }, // 1 thumb cmc
+      { x: 0.318, y: 0.715 }, // 2 thumb mcp
+      { x: 0.283, y: 0.638 }, // 3 thumb ip
+      { x: 0.285, y: 0.576 }, // 4 thumb tip (adducted open palm that previously collapsed margin to 0.08)
+      { x: 0.388, y: 0.512 }, // 5 index mcp
+      { x: 0.351, y: 0.378 }, // 6 index pip
+      { x: 0.326, y: 0.302 }, // 7 index dip
+      { x: 0.305, y: 0.238 }, // 8 index tip
+      { x: 0.458, y: 0.495 }, // 9 middle mcp
+      { x: 0.446, y: 0.345 }, // 10 middle pip
+      { x: 0.438, y: 0.258 }, // 11 middle dip
+      { x: 0.431, y: 0.165 }, // 12 middle tip
+      { x: 0.525, y: 0.512 }, // 13 ring mcp
+      { x: 0.542, y: 0.380 }, // 14 ring pip
+      { x: 0.552, y: 0.288 }, // 15 ring dip
+      { x: 0.558, y: 0.205 }, // 16 ring tip
+      { x: 0.586, y: 0.572 }, // 17 pinky mcp
+      { x: 0.632, y: 0.488 }, // 18 pinky pip
+      { x: 0.658, y: 0.432 }, // 19 pinky dip
+      { x: 0.678, y: 0.378 }, // 20 pinky tip
+    ];
+
+    // Inject a poisoned BOOK_HOLD_NEGATIVE signature near OPEN_PALM (L1 < 0.28, fourAvg > 0.65)
+    // alongside FOUR_FINGERS & OPEN_PALM prototypes to verify auto-pruning & margin >= 0.25
+    setActiveAdminModel({
+      ...prevModel,
+      gesturePrototypes: {
+        OPEN_PALM: {
+          gesture: "OPEN_PALM",
+          centroid: [0.74, 0.95, 0.95, 0.97, 0.91],
+          pinchNormMedian: 1.16,
+          d4_9Median: 1.02,
+          sampleCount: 1650,
+          lowLightSamples: 462,
+          glareSamples: 297,
+          meanLuminance: 0.48,
+          meanContrast: 0.21,
+          confidenceBoost: 1.06,
+        },
+        FOUR_FINGERS: {
+          gesture: "FOUR_FINGERS",
+          centroid: [0.33, 0.96, 0.96, 0.97, 0.91],
+          pinchNormMedian: 1.15,
+          d4_9Median: 0.28,
+          sampleCount: 1634,
+          lowLightSamples: 458,
+          glareSamples: 294,
+          meanLuminance: 0.48,
+          meanContrast: 0.21,
+          confidenceBoost: 1.04,
+        },
+      },
+      negativeGraspSignatures: [
+        {
+          id: "poisoned_open_palm_neg",
+          label: "Poisoned negative near open palm",
+          centroid: [0.64, 0.77, 0.74, 0.75, 0.79],
+          cApertureRatio: 0.52,
+          luminance: 0.42,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const activeAfterSanitize = getAdminTrainedModel();
+    const resWebcam = classifyHandGesture(screenshotOpenPalm, null, { webcamMode: true });
+    const resOffline = classifyHandGesture(screenshotOpenPalm, null, { webcamMode: false });
+
+    assert(
+      activeAfterSanitize.negativeGraspSignatures.length === 0 &&
+        resWebcam.gesture === "OPEN_PALM" &&
+        resWebcam.margin >= 0.25 &&
+        !resWebcam.objectGraspAnalysis?.isObjectGrasp &&
+        resOffline.gesture === "OPEN_PALM" &&
+        resOffline.margin >= 0.25 &&
+        !resOffline.objectGraspAnalysis?.isObjectGrasp,
+      "G9.6 Admin-trained OPEN_PALM auto-prunes poisoned negative signatures & prevents margin collapse (margin >= 0.25)",
+      `webcam=${resWebcam.gesture} (conf=${resWebcam.confidence}, margin=${resWebcam.margin}), prunedNegs=${activeAfterSanitize.negativeGraspSignatures.length}`
+    );
+
+    setActiveAdminModel(prevModel);
+  }
+
+  // G9.7 Live Webcam IntentTracker Stationary Recovery & Multi-Perimeter Aperture Occupancy Immunity
+  {
+    const tracker = new IntentTracker();
+    const screenshotOpenPalm: HandLandmark2D[] = [
+      { x: 0.480, y: 0.858 },
+      { x: 0.382, y: 0.798 },
+      { x: 0.318, y: 0.715 },
+      { x: 0.283, y: 0.638 },
+      { x: 0.242, y: 0.576 },
+      { x: 0.388, y: 0.512 },
+      { x: 0.351, y: 0.378 },
+      { x: 0.326, y: 0.302 },
+      { x: 0.305, y: 0.238 },
+      { x: 0.458, y: 0.495 },
+      { x: 0.446, y: 0.345 },
+      { x: 0.438, y: 0.258 },
+      { x: 0.431, y: 0.165 },
+      { x: 0.525, y: 0.512 },
+      { x: 0.542, y: 0.380 },
+      { x: 0.552, y: 0.288 },
+      { x: 0.558, y: 0.205 },
+      { x: 0.586, y: 0.572 },
+      { x: 0.632, y: 0.488 },
+      { x: 0.658, y: 0.432 },
+      { x: 0.678, y: 0.378 },
+    ];
+    // Simulate rapid hand entry followed by stationary hold
+    for (let i = 0; i < 4; i++) {
+      const dy = (3 - i) * 0.04;
+      tracker.update(
+        screenshotOpenPalm.map((p) => ({ x: p.x, y: p.y + dy })),
+        i * 16.6
+      );
+    }
+    let lastIntent = tracker.update(screenshotOpenPalm, 4 * 16.6);
+    for (let i = 5; i < 10; i++) {
+      lastIntent = tracker.update(screenshotOpenPalm, i * 16.6);
+    }
+    const analyzer = new SceneAnalyzer();
+    const mixedRoomFrame = new Uint8ClampedArray(64 * 48 * 4);
+    for (let y = 0; y < 48; y++) {
+      for (let x = 0; x < 64; x++) {
+        const idx = (y * 64 + x) * 4;
+        // Dark ceiling beam at top (y < 10), bright white wall below
+        const val = y < 10 ? 45 : 230;
+        mixedRoomFrame[idx] = val;
+        mixedRoomFrame[idx + 1] = val;
+        mixedRoomFrame[idx + 2] = val;
+        mixedRoomFrame[idx + 3] = 255;
+      }
+    }
+    const occ = analyzer.computeApertureObjectOccupancy(screenshotOpenPalm, mixedRoomFrame);
+    assert(
+      !lastIntent.transit && lastIntent.inRoi && occ === 0,
+      "G9.7 Live webcam OPEN_PALM immediately clears transit on stationary hold & returns 0% object occupancy",
+      `transit=${lastIntent.transit}, inRoi=${lastIntent.inRoi}, apertureOccupancy=${occ}`
+    );
+  }
 
   console.log("\n================================================================================");
   console.log(`📊 GLOBAL v4.0 BENCHMARK SUMMARY: ${passed}/${passed + failed} assertions passed`);

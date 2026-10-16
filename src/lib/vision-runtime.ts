@@ -484,7 +484,37 @@ export class SceneAnalyzer {
       return 0;
     }
 
-    // 1. Sample surrounding room background outside the hand bounding box
+    // Phase 2 Two-Factor Gate: If >= 3 of the 4 fingers have straight PIP (>= 142°) and
+    // straight MCP (>= 142°) joints, the hand is anatomically flat/open (e.g. OPEN_PALM),
+    // not clamping a physical object in its aperture.
+    const jointAngle = (a: HandLandmark2D, b: HandLandmark2D, c: HandLandmark2D): number => {
+      const ux = a.x - b.x,
+        uy = a.y - b.y;
+      const vx = c.x - b.x,
+        vy = c.y - b.y;
+      const denom = Math.hypot(ux, uy) * Math.hypot(vx, vy);
+      if (denom < 1e-6) return 180;
+      return (Math.acos(Math.max(-1, Math.min(1, (ux * vx + uy * vy) / denom))) * 180) / Math.PI;
+    };
+    const fingerTriplets: Array<[number, number, number]> = [
+      [5, 6, 8],
+      [9, 10, 12],
+      [13, 14, 16],
+      [17, 18, 20],
+    ];
+    let straightOpenFingerCount = 0;
+    for (const [mcpIdx, pipIdx, tipIdx] of fingerTriplets) {
+      const pipDeg = jointAngle(landmarks[mcpIdx], landmarks[pipIdx], landmarks[tipIdx]);
+      const mcpDeg = jointAngle(wrist, landmarks[mcpIdx], landmarks[pipIdx]);
+      if (pipDeg >= 142 && mcpDeg >= 142) {
+        straightOpenFingerCount++;
+      }
+    }
+    if (straightOpenFingerCount >= 3) {
+      return 0;
+    }
+
+    // 1. Sample surrounding room background outside the hand bounding box (top, left, and right strips)
     let minX = 1,
       maxX = 0,
       minY = 1,
@@ -503,6 +533,7 @@ export class SceneAnalyzer {
     const bx0 = Math.max(1, Math.floor((minX - 0.08) * 64));
     const bx1 = Math.min(62, Math.ceil((maxX + 0.08) * 64));
     const by0 = Math.max(1, Math.floor((minY - 0.08) * 48));
+    const by1 = Math.min(46, Math.ceil((maxY + 0.04) * 48));
     for (let x = bx0; x <= bx1; x += 3) {
       const topIdx = (by0 * 64 + x) * 4;
       bgR += activeRgba[topIdx];
@@ -514,6 +545,38 @@ export class SceneAnalyzer {
     bgR /= bgCount;
     bgG /= bgCount;
     bgB /= bgCount;
+
+    let leftR = bgR,
+      leftG = bgG,
+      leftB = bgB,
+      leftCount = 0;
+    let rightR = bgR,
+      rightG = bgG,
+      rightB = bgB,
+      rightCount = 0;
+    for (let y = by0; y <= by1; y += 4) {
+      const lIdx = (y * 64 + bx0) * 4;
+      leftR = leftCount === 0 ? activeRgba[lIdx] : leftR + activeRgba[lIdx];
+      leftG = leftCount === 0 ? activeRgba[lIdx + 1] : leftG + activeRgba[lIdx + 1];
+      leftB = leftCount === 0 ? activeRgba[lIdx + 2] : leftB + activeRgba[lIdx + 2];
+      leftCount++;
+
+      const rIdx = (y * 64 + bx1) * 4;
+      rightR = rightCount === 0 ? activeRgba[rIdx] : rightR + activeRgba[rIdx];
+      rightG = rightCount === 0 ? activeRgba[rIdx + 1] : rightG + activeRgba[rIdx + 1];
+      rightB = rightCount === 0 ? activeRgba[rIdx + 2] : rightB + activeRgba[rIdx + 2];
+      rightCount++;
+    }
+    if (leftCount > 0) {
+      leftR /= leftCount;
+      leftG /= leftCount;
+      leftB /= leftCount;
+    }
+    if (rightCount > 0) {
+      rightR /= rightCount;
+      rightG /= rightCount;
+      rightB /= rightCount;
+    }
 
     // 2. Sample Palm Center (0, 5, 9, 17) as skin reference
     const palmCenter: HandLandmark2D = {
@@ -554,7 +617,11 @@ export class SceneAnalyzer {
         const isSkin =
           this.skinCalibrator.isUserSkinPixel(r, g, b) ||
           Math.hypot(r - palmR, g - palmG, b - palmB) < 34.0;
-        const bgDist = Math.hypot(r - bgR, g - bgG, b - bgB);
+        const bgDist = Math.min(
+          Math.hypot(r - bgR, g - bgG, b - bgB),
+          Math.hypot(r - leftR, g - leftG, b - leftB),
+          Math.hypot(r - rightR, g - rightG, b - rightB)
+        );
 
         // Compute local Sobel edge gradient (book spine, phone bezel, or mug wall)
         const leftIdx = (sy * 64 + (sx - 1)) * 4;
@@ -840,6 +907,8 @@ export class IntentTracker {
   noHand(): IntentEvidence {
     this.streak = 0;
     this.lastWrist = null;
+    this.velEma = 0;
+    this.ring = [];
     return {
       presenceStreakFrames: 0,
       wristVelocity: 0,
@@ -860,22 +929,29 @@ export class IntentTracker {
     this.ring.push({ x: wrist.x, y: wrist.y, t: now });
     if (this.ring.length > IntentTracker.WIN * 2) this.ring.shift();
     let vel: number;
+    let recentVel = 0;
+    if (this.ring.length >= 4) {
+      const rPrev = this.ring[Math.max(0, this.ring.length - 4)];
+      const rDt = Math.max(16, now - rPrev.t) / 1000;
+      recentVel = Math.hypot(wrist.x - rPrev.x, wrist.y - rPrev.y) / rDt;
+    }
     if (this.ring.length >= IntentTracker.WIN * 2) {
       vel = this.centroidVelocity();
     } else if (this.ring.length >= 4) {
-      // warm-up: net displacement first→last. Tremor nets ≈ 0; a sweep does not.
-      const f = this.ring[0];
-      const dt = Math.max(1, now - f.t) / 1000;
-      vel = Math.hypot(wrist.x - f.x, wrist.y - f.y) / dt;
+      vel = recentVel;
     } else vel = 0;
     this.lastWrist = { x: wrist.x, y: wrist.y, t: now };
-    this.velEma = this.velEma * 0.6 + vel * 0.4;
+    if (recentVel < 0.55) {
+      this.velEma = this.velEma * 0.35 + recentVel * 0.65;
+    } else {
+      this.velEma = this.velEma * 0.6 + vel * 0.4;
+    }
 
     const cx = midMcp.x;
     const cy = midMcp.y;
-    const inRoi = cx > 0.12 && cx < 0.88 && cy > 0.1 && cy < 0.92;
-    const handScaleOk = handScale > 0.07 && handScale < 0.5;
-    const transit = this.velEma > 0.9;
+    const inRoi = cx > 0.10 && cx < 0.90 && cy > 0.08 && cy < 0.94;
+    const handScaleOk = handScale > 0.06 && handScale < 0.55;
+    const transit = this.velEma > 1.25 && recentVel > 0.75;
 
     const reasons: string[] = [];
     if (!inRoi) reasons.push("OUT_OF_ZONE");

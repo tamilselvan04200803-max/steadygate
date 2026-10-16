@@ -588,11 +588,30 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             : classification.gesture;
         const tv = timeVoterRef.current.push(voteGesture, classification.confidence, now);
         const fv = voterRef.current.push(voteGesture);
+        const rawAgreement = Math.max(tv.agreement, fv.agreement);
+        const resolvedCommitted: RecognizedGesture =
+          tv.committed !== "UNKNOWN"
+            ? tv.committed
+            : fv.committed !== "UNKNOWN"
+            ? fv.committed
+            : voteGesture !== "UNKNOWN" &&
+              classification.confidence >= 0.72 &&
+              classification.margin >= 0.2
+            ? voteGesture
+            : "UNKNOWN";
+        const resolvedAgreement =
+          resolvedCommitted !== "UNKNOWN"
+            ? Math.max(rawAgreement, classification.confidence)
+            : rawAgreement;
         vote = {
-          committed: tv.committed !== "UNKNOWN" ? tv.committed : fv.committed,
-          candidate: tv.raw,
-          agreement: tv.agreement,
-          stableFrames: tv.streak || fv.stableFrames,
+          committed: resolvedCommitted,
+          candidate: tv.raw !== "UNKNOWN" ? tv.raw : classification.gesture,
+          agreement: resolvedAgreement,
+          stableFrames: Math.max(
+            tv.streak,
+            fv.stableFrames,
+            resolvedCommitted !== "UNKNOWN" ? 1 : 0
+          ),
         };
       }
       lastClassRef.current = {

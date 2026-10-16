@@ -7,6 +7,7 @@ import {
   generateObjectGraspLandmarks,
   generateSyntheticGestureLandmarks,
   GESTURE_SMART_HOME_MAP,
+  setActiveAdminModel,
   setAdminTrainedModel,
 } from "@/lib/hand-gesture-engine";
 import { HandLandmark2D, HandParameters, RecognizedGesture, UserProfile } from "@/lib/types";
@@ -175,8 +176,9 @@ export default function AdminGestureTrainer({
       const res = await fetch("/api/admin-train");
       const data = await res.json();
       if (data.success && data.model) {
-        setModel(data.model);
+        setActiveAdminModel(data.model);
         setAdminTrainedModel(data.model);
+        setModel(data.model);
         setSamples(data.samples || []);
         setBenchmark(data.benchmark || null);
       }
@@ -294,8 +296,9 @@ export default function AdminGestureTrainer({
       });
       const data = await res.json();
       if (data.success && data.model) {
-        setModel(data.model);
+        setActiveAdminModel(data.model);
         setAdminTrainedModel(data.model);
+        setModel(data.model);
         setSamples(data.samples || []);
         setBenchmark(data.benchmark || null);
         onModelUpdated?.(data.model);
@@ -339,8 +342,9 @@ export default function AdminGestureTrainer({
       });
       const data = await res.json();
       if (data.success && data.model) {
-        setModel(data.model);
+        setActiveAdminModel(data.model);
         setAdminTrainedModel(data.model);
+        setModel(data.model);
         setSamples(data.samples || []);
         setBenchmark(data.benchmark || null);
         onModelUpdated?.(data.model);
@@ -420,8 +424,9 @@ export default function AdminGestureTrainer({
       });
       const data = await res.json();
       if (data.success && data.model) {
-        setModel(data.model);
+        setActiveAdminModel(data.model);
         setAdminTrainedModel(data.model);
+        setModel(data.model);
         setSamples([]);
         setBenchmark(data.benchmark || null);
         onModelUpdated?.(data.model);
@@ -443,7 +448,9 @@ export default function AdminGestureTrainer({
       ? generateObjectGraspLandmarks(previewPosture, 0, currentF0Hz || 5.2, 0.02)
       : generateSyntheticGestureLandmarks(previewPosture, 0, currentF0Hz || 5.2, 0.02);
 
-  const previewEval = classifyHandGesture(previewLandmarks);
+  const previewEval = classifyHandGesture(previewLandmarks, null, {
+    webcamMode: Boolean(webcamActive && liveLandmarks),
+  });
 
   return (
     <div className="bg-slate-900/95 border border-cyan-500/30 rounded-2xl p-5 shadow-2xl space-y-6">

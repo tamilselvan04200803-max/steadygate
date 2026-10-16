@@ -241,9 +241,46 @@ let activeAdminModel: AdminTrainedModelState = {
   },
 };
 
-export function setAdminTrainedModel(model: AdminTrainedModelState): void {
-  activeAdminModel = model;
+export function sanitizeAdminModelNegativeSignatures(
+  model: AdminTrainedModelState
+): AdminTrainedModelState {
+  if (!model || !Array.isArray(model.negativeGraspSignatures)) {
+    return model;
+  }
+  const positiveProtos = Object.values(model.gesturePrototypes || {}).filter(
+    (p): p is AdminGesturePrototype =>
+      Boolean(p && Array.isArray(p.centroid) && p.centroid.length === 5)
+  );
+  const prunedNegatives = model.negativeGraspSignatures.filter((neg) => {
+    const c = neg.centroid || (neg as unknown as { fingerFlexion?: number[] }).fingerFlexion;
+    if (!Array.isArray(c) || c.length !== 5) return false;
+    neg.centroid = [c[0], c[1], c[2], c[3], c[4]];
+    const fourAvg = (c[1] + c[2] + c[3] + c[4]) / 4.0;
+    // Never allow a negative grasp signature with open/extended 4-finger flexion (> 0.65)
+    if (fourAvg > 0.65) return false;
+    // Prune any negative signature within L1 distance < 0.28 of an open positive prototype (e.g., OPEN_PALM)
+    for (const pos of positiveProtos) {
+      const posFourAvg =
+        (pos.centroid[1] + pos.centroid[2] + pos.centroid[3] + pos.centroid[4]) / 4.0;
+      if (posFourAvg >= 0.72) {
+        const l1 =
+          c.reduce((acc, v, idx) => acc + Math.abs(v - pos.centroid[idx]), 0) / 5.0;
+        if (l1 < 0.28) return false;
+      }
+    }
+    return true;
+  });
+  return {
+    ...model,
+    negativeGraspSignatures: prunedNegatives,
+  };
 }
+
+export function setAdminTrainedModel(model: AdminTrainedModelState): void {
+  activeAdminModel = sanitizeAdminModelNegativeSignatures(model);
+}
+
+export const setActiveAdminModel = setAdminTrainedModel;
 
 export function getAdminTrainedModel(): AdminTrainedModelState {
   return activeAdminModel;
@@ -530,13 +567,64 @@ export function detectObjectGrasp(
       ? 0.85
       : 0;
 
+  const mIdx = angleAt(wrist, landmarks[5], landmarks[6]);
+  const mMid = angleAt(wrist, landmarks[9], landmarks[10]);
+  const mRng = angleAt(wrist, landmarks[13], landmarks[14]);
+  const mPnk = angleAt(wrist, landmarks[17], landmarks[18]);
+  const meanMcpAngle = (mIdx + mMid + mRng + mPnk) / 4.0;
+  const idxDy = (landmarks[5].y - landmarks[8].y) / palmLen;
+
+  // Sub-task 1.1: Admin Positive-Prototype & Straight-Joint Override Against False Object-Grasp Vetoes
+  const pipAngles = params.pipJointAnglesDeg || [
+    angleAt(landmarks[2], landmarks[3], landmarks[4]),
+    angleAt(landmarks[5], landmarks[6], landmarks[8]),
+    angleAt(landmarks[9], landmarks[10], landmarks[12]),
+    angleAt(landmarks[13], landmarks[14], landmarks[16]),
+    angleAt(landmarks[17], landmarks[18], landmarks[20]),
+  ];
+  const mcpAngles = params.mcpJointAnglesDeg || [mIdx, mMid, mRng, mPnk];
+  const straightPipAndMcpCount = [0, 1, 2, 3].filter(
+    (i) => pipAngles[i + 1] >= 142 && mcpAngles[i] >= 142
+  ).length;
+
+  const liveVec = [thumb, idx, mid, rng, pnk];
+  let maxAdminPositiveSim = 0;
+  if (
+    activeAdminModel.gesturePrototypes &&
+    Object.keys(activeAdminModel.gesturePrototypes).length > 0
+  ) {
+    for (const proto of Object.values(activeAdminModel.gesturePrototypes)) {
+      if (proto && Array.isArray(proto.centroid) && proto.centroid.length === 5) {
+        const protoFourAvg =
+          (proto.centroid[1] + proto.centroid[2] + proto.centroid[3] + proto.centroid[4]) / 4.0;
+        if (protoFourAvg >= 0.72) {
+          const flexDiff =
+            liveVec.reduce((acc, v, i) => acc + Math.abs(v - proto.centroid[i]), 0) / 5.0;
+          const sim = clamp01(1.0 - flexDiff);
+          if (sim > maxAdminPositiveSim) maxAdminPositiveSim = sim;
+        }
+      }
+    }
+  }
+
+  const isPositiveOpenPostureOverride =
+    (maxAdminPositiveSim >= 0.85 && straightPipAndMcpCount >= 3) ||
+    (straightPipAndMcpCount >= 3 && fourMean >= 0.72);
+
   // 0. Check Admin-Learned Negative Grasp Signatures (e.g., admin recorded holding a book/phone/mug)
-  if (!options?.webcamMode && activeAdminModel.negativeGraspSignatures.length > 0) {
-    const liveVec = [thumb, idx, mid, rng, pnk];
+  if (
+    !options?.webcamMode &&
+    !isPositiveOpenPostureOverride &&
+    fourMean <= 0.65 &&
+    activeAdminModel.negativeGraspSignatures.length > 0
+  ) {
     for (const neg of activeAdminModel.negativeGraspSignatures) {
-      if (Array.isArray(neg.centroid) && neg.centroid.length === 5) {
+      const c = neg.centroid || (neg as unknown as { fingerFlexion?: number[] }).fingerFlexion;
+      if (Array.isArray(c) && c.length === 5) {
+        const negFourAvg = (c[1] + c[2] + c[3] + c[4]) / 4.0;
+        if (negFourAvg > 0.65) continue;
         const l1 =
-          liveVec.reduce((acc, v, i) => acc + Math.abs(v - neg.centroid[i]), 0) / 5.0;
+          liveVec.reduce((acc, v, i) => acc + Math.abs(v - c[i]), 0) / 5.0;
         const apDiff = Math.abs(pinchNorm - (neg.cApertureRatio || pinchNorm));
         if (l1 <= 0.11 && apDiff <= 0.25) {
           return {
@@ -551,13 +639,6 @@ export function detectObjectGrasp(
       }
     }
   }
-
-  const mIdx = angleAt(wrist, landmarks[5], landmarks[6]);
-  const mMid = angleAt(wrist, landmarks[9], landmarks[10]);
-  const mRng = angleAt(wrist, landmarks[13], landmarks[14]);
-  const mPnk = angleAt(wrist, landmarks[17], landmarks[18]);
-  const meanMcpAngle = (mIdx + mMid + mRng + mPnk) / 4.0;
-  const idxDy = (landmarks[5].y - landmarks[8].y) / palmLen;
 
   // 6. Wide Smartphone / Tablet / Object Clasp with Index Extended (Failure Case 1: Screenshot 114707):
   // Biomechanical Contact Invariant: Thumb tip (4) opposes the MCP/PIP knuckle line across a wide object
@@ -602,10 +683,35 @@ export function detectObjectGrasp(
     };
   }
 
-  // Factor B — Strict Confirmation Gate:
+  // 1. Palm occluded or collapsed by a large held object (book cover blocking palm)
+  const isNaturalSideProfileFreeHand = checkNaturalSideProfileFreeHand(
+    landmarks,
+    params.fingerFlexion
+  );
+
+  if (
+    !options?.webcamMode &&
+    (aspect < 0.38 || aspect > 3.6) &&
+    !isNaturalSideProfileFreeHand
+  ) {
+    return {
+      isObjectGrasp: true,
+      reason: "PALM_OCCLUDED_BY_OBJECT",
+      bimodalityScore: Math.round(bimodalityScore * 100) / 100,
+      cApertureRatio: Math.round(pinchNorm * 100) / 100,
+      lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
+      apertureOccupancyRatio: Math.max(visualOccupancy, 0.90),
+    };
+  }
+
+  // Factor B — Strict Confirmation Gate & Sub-task 1.1 Positive-Prototype Override:
   // In live camera mode, if the hand merely forms a curved/semi-flexed shape WITHOUT confirmed
-  // physical object occupancy inside the Grasp Aperture Polygon, DO NOT trigger `isObjectGrasp`.
-  if (options?.webcamMode && !options?.foreignObjectDetected && visualOccupancy < 0.45) {
+  // physical object occupancy inside the Grasp Aperture Polygon, OR if the hand matches an
+  // Admin-trained open posture with straight PIP & MCP joints, exempt from all soft object-grasp guards.
+  if (
+    isPositiveOpenPostureOverride ||
+    (options?.webcamMode && !options?.foreignObjectDetected && visualOccupancy < 0.45)
+  ) {
     return {
       isObjectGrasp: false,
       reason: "NONE",
@@ -615,12 +721,6 @@ export function detectObjectGrasp(
       apertureOccupancyRatio: visualOccupancy,
     };
   }
-
-  // 1. Palm occluded or collapsed by a large held object (book cover blocking palm)
-  const isNaturalSideProfileFreeHand = checkNaturalSideProfileFreeHand(
-    landmarks,
-    params.fingerFlexion
-  );
 
   if ((aspect < 0.38 || aspect > 3.6) && !isNaturalSideProfileFreeHand) {
     return {
@@ -1029,6 +1129,17 @@ export function classifyHandGesture(
     pinky > pinkyOpenGate || (pinky >= 0.35 && pinkyPipDeg >= 140);
   const d4_17 = dist(landmarks[4], landmarks[17]) / palmLen;
   const thumbIpDeg = angleAt(landmarks[2], landmarks[3], landmarks[4]);
+  const ux = landmarks[5].x - landmarks[17].x;
+  const uy = landmarks[5].y - landmarks[17].y;
+  const vx = landmarks[4].x - landmarks[5].x;
+  const vy = landmarks[4].y - landmarks[5].y;
+  const thumbRadialProj = (vx * ux + vy * uy) / Math.max(ux * ux + uy * uy, 1e-6);
+
+  const d49Gate = options?.webcamMode ? 0.42 : 0.54;
+  const d413Gate = options?.webcamMode ? 0.45 : 0.58;
+  const thumbTuckedAcrossPalm =
+    thumbRadialProj < 0.18 ||
+    (d4_9 < d49Gate && (d4_13 < d413Gate || thumb < 0.35) && thumbRadialProj < 0.25);
 
   if (
     index > openGate &&
@@ -1038,28 +1149,19 @@ export function classifyHandGesture(
     !pinkyGenuinelyCurled &&
     scores.PINCH < 0.6
   ) {
-    const ux = landmarks[5].x - landmarks[17].x;
-    const uy = landmarks[5].y - landmarks[17].y;
-    const vx = landmarks[4].x - landmarks[5].x;
-    const vy = landmarks[4].y - landmarks[5].y;
-    const thumbRadialProj = (vx * ux + vy * uy) / Math.max(ux * ux + uy * uy, 1e-6);
-
-    const d49Gate = options?.webcamMode ? 0.42 : 0.54;
-    const d413Gate = options?.webcamMode ? 0.45 : 0.58;
-    const thumbTuckedAcrossPalm =
-      thumbRadialProj < 0.18 ||
-      (d4_9 < d49Gate && (d4_13 < d413Gate || thumb < 0.35) && thumbRadialProj < 0.25);
-
     if (thumbTuckedAcrossPalm) {
       const thumbTucked = clamp01(1.0 - Math.min(thumb, d4_9));
       scores.FOUR_FINGERS = Math.min(0.97, 0.66 + 0.2 * fourMean + 0.11 * thumbTucked);
-      scores.OPEN_PALM = 0.35;
+      scores.OPEN_PALM = 0.35 * 0.65;
     } else if (thumb >= 0.35 || thumbIpDeg >= 145) {
       const effectiveThumb = Math.max(thumb, 0.52);
       const effectivePinky = Math.max(pinky, pinkyPipDeg >= 145 ? 0.72 : pinky);
       const allFive = (effectiveThumb + index + middle + ring + effectivePinky) / 5.0;
       scores.OPEN_PALM = Math.min(0.97, 0.66 + 0.3 * allFive);
-      scores.FOUR_FINGERS = 0.32;
+      // Sub-task 1.3: Apply lateral inhibition (x 0.65) to FOUR_FINGERS and THREE_FINGERS
+      // when index, middle, ring are extended and thumb + pinky are not folded into the palm
+      scores.FOUR_FINGERS = Math.min(scores.FOUR_FINGERS, 0.32) * 0.65;
+      scores.THREE_FINGERS = scores.THREE_FINGERS * 0.65;
     }
   }
 
@@ -1090,6 +1192,15 @@ export function classifyHandGesture(
   ) {
     const liveVec = [thumb, index, middle, ring, pinky];
     const livePip = handParams.pipJointAnglesDeg || [160, 160, 160, 160, 160];
+    const isFiveFingerOpenPosture =
+      index > openGate &&
+      middle > openGate &&
+      ring > openGate &&
+      pinkyStraightOrExtended &&
+      !pinkyGenuinelyCurled &&
+      !thumbTuckedAcrossPalm &&
+      (thumb >= 0.35 || thumbIpDeg >= 145);
+
     for (const [gestKey, proto] of Object.entries(activeAdminModel.gesturePrototypes)) {
       const key = gestKey as Exclude<RecognizedGesture, "UNKNOWN">;
       if (proto && Array.isArray(proto.centroid) && proto.centroid.length === 5) {
@@ -1097,9 +1208,39 @@ export function classifyHandGesture(
         if (key === "THUMBS_UP" && !(thDy >= -0.05 && wristDy >= 0.0)) continue;
         if (key === "THUMBS_DOWN" && thDy >= -0.05 && wristDy >= 0.0) continue;
 
+        // Sub-task 1.3: Prevent subset gesture prototypes (FOUR_FINGERS, THREE_FINGERS) from
+        // cross-boosting on a 5-finger OPEN_PALM and collapsing top1-top2 margin below 0.15
+        if (key === "FOUR_FINGERS" && !thumbTuckedAcrossPalm) continue;
+        if (
+          key === "THREE_FINGERS" &&
+          pinkyStraightOrExtended &&
+          !pinkyGenuinelyCurled &&
+          ring > openGate
+        ) {
+          continue;
+        }
+        if (
+          key === "OPEN_PALM" &&
+          (thumbTuckedAcrossPalm ||
+            pinkyGenuinelyCurled ||
+            index <= openGate ||
+            middle <= openGate ||
+            ring <= openGate)
+        ) {
+          continue;
+        }
+
         const meanDiff =
           liveVec.reduce((acc, v, idx) => acc + Math.abs(v - proto.centroid[idx]), 0) / 5.0;
-        const d49Diff = Math.abs(d4_9 - (proto.d4_9Median || d4_9));
+        const maxFingerDiff = Math.max(
+          ...liveVec.map((v, idx) => Math.abs(v - proto.centroid[idx]))
+        );
+        const rawD49Diff = Math.abs(d4_9 - (proto.d4_9Median || d4_9));
+        // For OPEN_PALM, any abducted thumb with d4_9 >= 0.42 and !thumbTuckedAcrossPalm is anatomically valid
+        const d49Diff =
+          key === "OPEN_PALM" && isFiveFingerOpenPosture && d4_9 >= 0.42
+            ? 0
+            : rawD49Diff;
 
         // Compare PIP joint angles and inter-finger distance ratios if stored on prototype
         let pipPenalty = 0;
@@ -1111,12 +1252,23 @@ export function classifyHandGesture(
         }
 
         const compositeDiff = meanDiff + 0.25 * pipPenalty;
-        if (compositeDiff <= 0.16 && d49Diff <= 0.32 && (scores[key] >= 0.45 || compositeDiff <= 0.11)) {
+        const sim = clamp01(1.0 - compositeDiff);
+        if (
+          sim >= 0.75 &&
+          compositeDiff <= 0.18 &&
+          maxFingerDiff <= 0.30 &&
+          d49Diff <= 0.32 &&
+          (scores[key] >= 0.45 || (compositeDiff <= 0.11 && maxFingerDiff <= 0.22))
+        ) {
           const matchScore =
-            0.74 +
-            0.18 * (1 - compositeDiff / 0.16) +
-            0.06 * Math.min(1, (proto.confidenceBoost || 1) - 0.95);
+            0.76 +
+            0.18 * (1 - compositeDiff / 0.18) +
+            0.05 * Math.min(1, (proto.confidenceBoost || 1) - 0.95);
           scores[key] = Math.min(0.99, Math.max(scores[key], matchScore));
+          if (key === "OPEN_PALM" && isFiveFingerOpenPosture) {
+            scores.FOUR_FINGERS *= 0.65;
+            scores.THREE_FINGERS *= 0.65;
+          }
           personalizedBoostApplied = true;
         }
       }
