@@ -155,33 +155,54 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {!userDataSnapshot?.recentObservations?.length ? (
-                  <tr>
+                  <tr key="empty-observations">
                     <td colSpan={7} className="py-4 text-center text-slate-500 font-sans">
                       Collecting background user observations...
                     </td>
                   </tr>
                 ) : (
-                  userDataSnapshot.recentObservations.slice(0, 15).map((obs: any) => (
-                    <tr key={obs.id} className="hover:bg-slate-900/60">
-                      <td className="py-1.5 px-2.5 text-slate-400">
-                        {new Date(obs.timestamp).toLocaleTimeString()}
-                      </td>
-                      <td className="py-1.5 px-2.5 text-slate-200 font-sans">{obs.userName}</td>
-                      <td className="py-1.5 px-2.5 text-cyan-400">{obs.source}</td>
-                      <td className="py-1.5 px-2.5 text-emerald-300 font-bold">{obs.gesture}</td>
-                      <td className="py-1.5 px-2.5 text-purple-300">
-                        {Number(obs.tremorHz).toFixed(1)}Hz / {Number(obs.tremorAmplitude).toFixed(3)}
-                      </td>
-                      <td className="py-1.5 px-2.5 text-sky-300">
-                        {Number(obs.palmScale).toFixed(2)} / {Number(obs.fingerSpread).toFixed(2)}
-                      </td>
-                      <td className="py-1.5 px-2.5 text-slate-300">
-                        {Array.isArray(obs.fingerExtensions)
-                          ? obs.fingerExtensions.map((v: number) => Number(v).toFixed(2)).join(", ")
-                          : "—"}
-                      </td>
-                    </tr>
-                  ))
+                  userDataSnapshot.recentObservations.slice(0, 15).map((obs: any, index: number) => {
+                    const rowKey =
+                      obs.id ||
+                      obs.calibId ||
+                      `${obs.timestampIso || obs.timestamp || "obs"}-${obs.userId ?? ""}-${index}`;
+                    const timeFormatted =
+                      obs.timestampIso || obs.timestamp
+                        ? new Date(obs.timestampIso || obs.timestamp).toLocaleTimeString()
+                        : "—";
+                    const userName = obs.userName || obs.userId || "User";
+                    const source = obs.streamSource || obs.source || "SIMULATED";
+                    const gesture = obs.gestureRecognition?.gesture || obs.gesture || "—";
+                    const tremorHz =
+                      obs.kinematics?.f0Hz ?? obs.signature?.f0Hz ?? obs.tremorHz ?? 5.2;
+                    const tremorAmp =
+                      obs.kinematics?.amplitudeRms ?? obs.signature?.amplitudeRms ?? obs.tremorAmplitude ?? 0.045;
+                    const palmScale = obs.handMorphology?.palmScale ?? obs.palmScale ?? 1.0;
+                    const fingerSpread =
+                      obs.handMorphology?.fingerFlexibility ?? obs.fingerSpread ?? 1.0;
+                    const fingerExt =
+                      obs.handMorphology?.perFingerExtensionAvg ?? obs.fingerExtensions;
+
+                    return (
+                      <tr key={rowKey} className="hover:bg-slate-900/60">
+                        <td className="py-1.5 px-2.5 text-slate-400">{timeFormatted}</td>
+                        <td className="py-1.5 px-2.5 text-slate-200 font-sans">{userName}</td>
+                        <td className="py-1.5 px-2.5 text-cyan-400">{source}</td>
+                        <td className="py-1.5 px-2.5 text-emerald-300 font-bold">{gesture}</td>
+                        <td className="py-1.5 px-2.5 text-purple-300">
+                          {Number(tremorHz).toFixed(1)}Hz / {Number(tremorAmp).toFixed(3)}
+                        </td>
+                        <td className="py-1.5 px-2.5 text-sky-300">
+                          {Number(palmScale).toFixed(2)} / {Number(fingerSpread).toFixed(2)}
+                        </td>
+                        <td className="py-1.5 px-2.5 text-slate-300">
+                          {Array.isArray(fingerExt)
+                            ? fingerExt.map((v: number) => Number(v).toFixed(2)).join(", ")
+                            : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -259,19 +280,19 @@ export const AuditLogView: React.FC<AuditLogViewProps> = ({
             </thead>
             <tbody className="divide-y divide-slate-800/60 font-mono">
               {filteredLogs.length === 0 ? (
-                <tr>
+                <tr key="empty-actuation-logs">
                   <td colSpan={7} className="py-8 text-center text-slate-500 font-sans">
                     No actuation records yet. Show a gesture (e.g., OPEN_PALM for Fan) or click Turn ON/OFF.
                   </td>
                 </tr>
               ) : (
-                filteredLogs.map((log) => {
+                filteredLogs.map((log, index) => {
                   const isActuated = log.status === "ACTUATED";
                   const isPending = log.status === "HANDSHAKE_PENDING";
 
                   return (
                     <tr
-                      key={log.id}
+                      key={log.id || `act-log-${index}-${log.createdAt}`}
                       onClick={() => setSelectedLog(log)}
                       className="hover:bg-slate-800/40 cursor-pointer transition-colors"
                     >

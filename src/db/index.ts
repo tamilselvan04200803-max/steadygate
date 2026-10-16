@@ -147,6 +147,7 @@ function createDbInstance(): ReturnType<typeof drizzlePg> {
         connectionString: databaseUrl,
       });
     globalForDb.__arenaNextJsPostgresqlPool = pool;
+    void pool.query(SCHEMA_BOOTSTRAP_SQL).catch(console.error);
     const instance = drizzlePg(pool);
     globalForDb.__arenaDrizzleDb = instance;
     return instance;
@@ -170,7 +171,9 @@ function createDbInstance(): ReturnType<typeof drizzlePg> {
 export const db = createDbInstance();
 
 export async function ensureDbReady(): Promise<void> {
-  if (globalForDb.__arenaPgliteInitPromise) {
+  if (globalForDb.__arenaNextJsPostgresqlPool) {
+    await globalForDb.__arenaNextJsPostgresqlPool.query(SCHEMA_BOOTSTRAP_SQL).catch(console.error);
+  } else if (globalForDb.__arenaPgliteInitPromise) {
     await globalForDb.__arenaPgliteInitPromise;
   } else if (globalForDb.__arenaPgliteInstance) {
     globalForDb.__arenaPgliteInitPromise = globalForDb.__arenaPgliteInstance
