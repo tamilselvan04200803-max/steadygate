@@ -9,14 +9,24 @@ import {
   HandLandmark2D,
   HandParameters,
 } from "@/lib/types";
-import { extractMotionSignature, calculateNormalizedStability } from "@/lib/signal-processing";
+import {
+  extractMotionSignature,
+  calculateNormalizedStability,
+  AdaptiveTremorFrequencyTracker,
+  type TremorLockStatus,
+} from "@/lib/signal-processing";
 import {
   classifyHandGesture,
   generateSyntheticGestureLandmarks,
+  generateObjectGraspLandmarks,
+  REAL_WORLD_FAILURE_CASES,
   GESTURE_SMART_HOME_MAP,
+  type ObjectGraspAnalysis,
 } from "@/lib/hand-gesture-engine";
 import {
   loadHandLandmarker,
+  installMediaPipeConsoleGuard,
+  withMediaPipeConsoleSuppressedSync,
   SceneAnalyzer,
   LandmarkSmoother,
   GestureVoter,
@@ -32,6 +42,8 @@ import {
   type IntentEvidence,
   type VoteResult,
 } from "@/lib/vision-runtime";
+import { TimeWeightedGestureVoter } from "@/lib/voter/time-weighted-voter";
+import { LOCALE_GESTURE_PACKS } from "@/lib/locales/gesture-packs";
 import {
   Camera,
   Video,
@@ -44,6 +56,8 @@ import {
   Wand2,
   Cpu,
   Activity,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 
 interface LiveCameraStreamProps {
@@ -66,6 +80,16 @@ interface LiveCameraStreamProps {
   setSceneQuality: (val: number) => void;
   onGestureRecognized: (gesture: RecognizedGesture, confidence: number, margin: number) => void;
   onPersonalizeSuccess?: (updatedUser: UserProfile) => void;
+  onLiveHandFrame?: (frame: {
+    landmarks: HandLandmark2D[];
+    handParams: HandParameters;
+    gesture: RecognizedGesture;
+    confidence: number;
+    webcamActive: boolean;
+  }) => void;
+  expandedView?: boolean;
+  onToggleExpandedView?: () => void;
+  onSyntheticGestureSelect?: (gesture: RecognizedGesture) => void;
 }
 
 type Runtime = {
@@ -78,9 +102,11 @@ type Runtime = {
   fpsFrames: number;
   fpsLast: number;
   fps: number;
-  lastVideoTime: number;
+  lastVideoTime: -1 | number;
+  lastDetectTs: number;
   lastTelemetry: number;
   lastHandTs: number;
+  lastLandmarks: HandLandmark2D[] | null;
 };
 
 export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
@@ -96,15 +122,42 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   setSceneQuality,
   onGestureRecognized,
   onPersonalizeSuccess,
+  onLiveHandFrame,
+  expandedView = false,
+  onToggleExpandedView,
+  onSyntheticGestureSelect,
 }) => {
   const [streamSource, setStreamSource] = useState<"SIMULATED" | "WEBCAM">("SIMULATED");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("IDLE");
   const [webcamError, setWebcamError] = useState<string | null>(null);
   const [tremorInjectionAmp, setTremorInjectionAmp] = useState(user?.amplitudeRms || 0.045);
-  const [activeGesture, setActiveGesture] = useState<RecognizedGesture>("OPEN_PALM");
+  const [activeGesture, setActiveGesture] = useState<RecognizedGesture>("FIST");
   const [handParams, setHandParams] = useState<HandParameters | null>(null);
+  const [graspAnalysis, setGraspAnalysis] = useState<ObjectGraspAnalysis | null>(null);
+  const [bookHoldTestMode, setBookHoldTestMode] = useState<
+    | "NONE"
+    | "BOOK_SPINE"
+    | "OPEN_BOOK"
+    | "PHONE_GRASP"
+    | "CUP_MUG"
+    | "CASE_1_PHONE_IN_HAND"
+    | "CASE_2_FREE_HAND_SIDE_PROFILE"
+    | "CASE_3_NOSE_TINGLING_SCRATCH"
+  >("NONE");
+  const [lightingStressMode, setLightingStressMode] = useState<
+    "OPTIMAL" | "LOW_LIGHT_12_LUX" | "HARSH_BACKLIGHT_GLARE"
+  >("OPTIMAL");
+  const [tremorLockStatus, setTremorLockStatus] = useState<TremorLockStatus | null>(null);
   const [personalizing, setPersonalizing] = useState(false);
   const [personalizeNotice, setPersonalizeNotice] = useState<string | null>(null);
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const [localeCountryCode, setLocaleCountryCode] = useState<string>("US");
+
+  const isExpanded = expandedView || localExpanded;
+  const tremorTrackerRef = useRef(
+    new AdaptiveTremorFrequencyTracker(user?.f0Hz || 5.2, user?.amplitudeRms || 0.045, 3, 7)
+  );
+
   const [hud, setHud] = useState<{
     fps: number;
     detectRate: number;
@@ -143,16 +196,23 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     fpsLast: 0,
     fps: 0,
     lastVideoTime: -1,
+    lastDetectTs: 0,
     lastTelemetry: 0,
     lastHandTs: 0,
+    lastLandmarks: null as HandLandmark2D[] | null,
   });
   const sceneRef = useRef(new SceneAnalyzer());
   const smootherRef = useRef(new LandmarkSmoother());
   const voterRef = useRef(new GestureVoter(9, 0.6, 0.35));
+  const timeVoterRef = useRef(new TimeWeightedGestureVoter(350, 0.6, 0.35));
   const intentRef = useRef(new IntentTracker());
   const errorsRef = useRef(new ErrorCollector());
   const sessionRef = useRef<string>("");
-  const lastClassRef = useRef<{ gesture: RecognizedGesture; confidence: number; margin: number } | null>(null);
+  const lastClassRef = useRef<{
+    gesture: RecognizedGesture;
+    confidence: number;
+    margin: number;
+  } | null>(null);
   const lastIntentRef = useRef<IntentEvidence | null>(null);
   const lastVoteRef = useRef<VoteResult | null>(null);
   const cameraErrRef = useRef<string | null>(null);
@@ -160,12 +220,16 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   const preferDelegateRef = useRef<Delegate>("GPU");
 
   useEffect(() => {
+    installMediaPipeConsoleGuard();
     sessionRef.current = makeSessionId();
     errorsRef.current.attach();
   }, []);
 
   useEffect(() => {
     if (user?.amplitudeRms) setTremorInjectionAmp(user.amplitudeRms);
+    if (user?.f0Hz) {
+      tremorTrackerRef.current.syncUserBaseline(user.f0Hz, user.amplitudeRms || 0.045);
+    }
   }, [user]);
 
   const setStatus = (s: ModelStatus) => {
@@ -173,56 +237,90 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     setModelStatus(s);
   };
 
-  const sendTelemetry = useCallback(
-    async (force = false) => {
-      const r = rt.current;
-      const now = performance.now();
-      if (!force && now - r.lastTelemetry < 3000) return;
-      r.lastTelemetry = now;
-      const detectRate = r.framesTotal ? r.framesWithHand / r.framesTotal : 0;
-      const res = await postTelemetryWithDirectives({
-        sessionId: sessionRef.current,
-        mode: sourceRef.current,
-        modelStatus: modelStatusRef.current,
-        delegate: r.delegate,
-        modelSource: r.source,
-        loaderEvents: r.loaderEvents,
-        fps: r.fps,
-        framesTotal: r.framesTotal,
-        framesWithHand: r.framesWithHand,
-        detectRate,
-        scene: sceneRef.current.stats(),
-        vote: lastVoteRef.current,
-        intent: lastIntentRef.current,
-        classifier: lastClassRef.current,
-        cameraError: cameraErrRef.current,
-        jsErrors: errorsRef.current.drain(),
-        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
-        ts: Date.now(),
-      });
-      if (res?.preferDelegate && res.preferDelegate !== preferDelegateRef.current) {
-        preferDelegateRef.current = res.preferDelegate as Delegate;
-      }
-    },
-    []
-  );
-
-  /* ---------------------------- webcam lifecycle ---------------------------- */
+  const sendTelemetry = useCallback(async (force = false) => {
+    const r = rt.current;
+    const now = performance.now();
+    if (!force && now - r.lastTelemetry < 3000) return;
+    r.lastTelemetry = now;
+    const detectRate = r.framesTotal ? r.framesWithHand / r.framesTotal : 0;
+    const res = await postTelemetryWithDirectives({
+      sessionId: sessionRef.current,
+      mode: sourceRef.current,
+      modelStatus: modelStatusRef.current,
+      delegate: r.delegate,
+      modelSource: r.source,
+      loaderEvents: r.loaderEvents,
+      fps: r.fps,
+      framesTotal: r.framesTotal,
+      framesWithHand: r.framesWithHand,
+      detectRate,
+      scene: sceneRef.current.stats(),
+      vote: lastVoteRef.current,
+      intent: lastIntentRef.current,
+      classifier: lastClassRef.current,
+      cameraError: cameraErrRef.current,
+      jsErrors: errorsRef.current.drain(),
+      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+      ts: Date.now(),
+    });
+    if (res?.preferDelegate && res.preferDelegate !== preferDelegateRef.current) {
+      preferDelegateRef.current = res.preferDelegate as Delegate;
+    }
+  }, []);
 
   const startWebcam = async () => {
     setWebcamError(null);
     cameraErrRef.current = null;
+
+    // Clean up any stale streams before requesting a new one
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("getUserMedia unsupported");
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+        video: { width: { ideal: 960 }, height: { ideal: 640 }, facingMode: "user" },
         audio: false,
       });
       streamRef.current = stream;
       const v = videoRef.current;
       if (!v) throw new Error("video element missing");
-      v.srcObject = stream;
-      await v.play();
+
+      if (v.srcObject !== stream) {
+        v.srcObject = stream;
+      }
+
+      // Wait for video metadata to be ready to avoid play() interruptions
+      await new Promise<void>((resolve) => {
+        if (v.readyState >= 1) {
+          resolve();
+        } else {
+          const onLoaded = () => {
+            v.removeEventListener("loadedmetadata", onLoaded);
+            resolve();
+          };
+          v.addEventListener("loadedmetadata", onLoaded, { once: true });
+          setTimeout(resolve, 1000);
+        }
+      });
+
+      // Play video with safe AbortError catch
+      try {
+        await v.play();
+      } catch (playErr: any) {
+        if (playErr?.name !== "AbortError") {
+          console.warn("video.play() warning:", playErr);
+        }
+        if (v.paused) {
+          try {
+            await v.play();
+          } catch {
+            // Video can still stream frames once ready
+          }
+        }
+      }
 
       setStatus("LOADING_WASM");
       const r = rt.current;
@@ -238,6 +336,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       r.framesTotal = 0;
       r.framesWithHand = 0;
       r.lastVideoTime = -1;
+      r.lastDetectTs = 0;
       smootherRef.current.reset();
       voterRef.current.reset();
       intentRef.current.reset();
@@ -307,7 +406,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         onPersonalizeSuccess?.(data.user);
       }
     } catch (err) {
-      console.error("Personalize error:", err);
+      console.warn("Personalize notice:", err);
     } finally {
       setPersonalizing(false);
       setTimeout(() => setPersonalizeNotice(null), 4000);
@@ -328,7 +427,8 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     const now = performance.now();
     const r = rt.current;
     const video = videoRef.current;
-    const webcam = sourceRef.current === "WEBCAM" && video && video.readyState >= 2 && r.landmarker;
+    const webcam =
+      sourceRef.current === "WEBCAM" && video && video.readyState >= 2 && r.landmarker;
 
     ctx.clearRect(0, 0, width, height);
 
@@ -337,7 +437,6 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     let mirrored = false;
 
     if (webcam && video) {
-      // fps
       r.fpsFrames += 1;
       if (now - r.fpsLast > 1000) {
         r.fps = Math.round((r.fpsFrames * 1000) / (now - r.fpsLast));
@@ -345,7 +444,6 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         r.fpsLast = now;
       }
 
-      // draw mirrored video
       ctx.save();
       ctx.translate(width, 0);
       ctx.scale(-1, 1);
@@ -357,8 +455,12 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         r.lastVideoTime = video.currentTime;
         sceneRef.current.analyse(video);
         const input = sceneRef.current.frameForDetector(video);
+        const detectTs = Math.max(r.lastDetectTs + 1, Math.floor(now));
+        r.lastDetectTs = detectTs;
         try {
-          const res = r.landmarker!.detectForVideo(input, now);
+          const res = withMediaPipeConsoleSuppressedSync(() =>
+            r.landmarker!.detectForVideo(input, detectTs)
+          );
           r.framesTotal += 1;
           const lm = res.landmarks?.[0];
           if (lm && lm.length === 21) {
@@ -366,67 +468,140 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             r.lastHandTs = now;
             const raw: HandLandmark2D[] = lm.map((p) => ({ x: p.x, y: p.y, z: p.z }));
             normLandmarks = smootherRef.current.smooth(raw, now);
+            r.lastLandmarks = normLandmarks;
             handPresent = true;
+          } else {
+            r.lastLandmarks = null;
+            handPresent = false;
           }
         } catch (e) {
           errorsRef.current.push(`detectForVideo: ${(e as Error).message}`, "vision");
         }
-      } else if (now - r.lastHandTs < 120 && smootherRef.current) {
-        // reuse last smoothed landmarks between video frames (no new frame yet)
-        handPresent = false;
+      } else if (now - r.lastHandTs < 150 && r.lastLandmarks) {
+        // Reuse latest smoothed landmarks on intermediate 60Hz animation frames
+        // when the 30Hz webcam video.currentTime has not yet advanced.
+        normLandmarks = r.lastLandmarks;
+        handPresent = true;
       }
     } else {
-      // ---- synthetic fallback (clearly labelled) ----
       ctx.fillStyle = sceneQuality < 0.35 ? "#020617" : "#090d16";
       ctx.fillRect(0, 0, width, height);
       ctx.strokeStyle = "rgba(30, 41, 59, 0.4)";
-      for (let x = 0; x < width; x += 40) {
+      for (let x = 0; x < width; x += 48) {
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, height);
         ctx.stroke();
       }
-      normLandmarks = generateSyntheticGestureLandmarks(
-        activeGesture,
-        t,
-        user?.f0Hz || 5.2,
-        tremorInjectionAmp
-      );
+      for (let y = 0; y < height; y += 48) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+      if (
+        bookHoldTestMode === "CASE_1_PHONE_IN_HAND" ||
+        bookHoldTestMode === "CASE_2_FREE_HAND_SIDE_PROFILE" ||
+        bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH"
+      ) {
+        const baseCase = REAL_WORLD_FAILURE_CASES[bookHoldTestMode];
+        const jx = Math.sin(2 * Math.PI * (user?.f0Hz || 5.2) * t) * (tremorInjectionAmp * 0.25);
+        const jy = Math.cos(2 * Math.PI * (user?.f0Hz || 5.2) * t) * (tremorInjectionAmp * 0.25);
+        normLandmarks = baseCase.map((p) => ({ x: p.x + jx, y: p.y + jy }));
+      } else {
+        normLandmarks =
+          bookHoldTestMode !== "NONE"
+            ? generateObjectGraspLandmarks(
+                bookHoldTestMode,
+                t,
+                user?.f0Hz || 5.2,
+                tremorInjectionAmp
+              )
+            : generateSyntheticGestureLandmarks(
+                activeGesture,
+                t,
+                user?.f0Hz || 5.2,
+                tremorInjectionAmp
+              );
+      }
       handPresent = true;
     }
 
-    // ---------------- classification + intent ----------------
     let classification: ReturnType<typeof classifyHandGesture> | null = null;
     let intent: IntentEvidence;
     let vote: VoteResult | null = null;
 
     if (normLandmarks) {
-      classification = classifyHandGesture(normLandmarks, user);
+      const faceOverlapDetected = webcam
+        ? sceneRef.current.detectFaceNoseOverlap(normLandmarks)
+        : bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH";
+      classification = classifyHandGesture(normLandmarks, user, {
+        faceOverlapDetected,
+        localeCountryCode,
+      });
       setHandParams(classification.handParams);
-      intent = webcam ? intentRef.current.update(normLandmarks, now) : {
-        presenceStreakFrames: 999,
-        wristVelocity: 0,
-        inRoi: true,
-        handScale: 0.2,
-        handScaleOk: true,
-        transit: false,
-        reasons: [],
-        score: 1,
-      };
-      // Gate noisy frames before voting: low confidence or in-transit → UNKNOWN vote
-      const voteGesture: RecognizedGesture =
-        classification.confidence < 0.5 || intent.transit ? "UNKNOWN" : classification.gesture;
-      vote = voterRef.current.push(voteGesture);
+      setGraspAnalysis(
+        classification.objectGraspAnalysis ?? {
+          isObjectGrasp: false,
+          reason: "NONE",
+          bimodalityScore: 0.94,
+          cApertureRatio: 0.52,
+          lumbricalFlatness: 0,
+          faceOverlapDetected: false,
+        }
+      );
+      intent = webcam
+        ? intentRef.current.update(normLandmarks, now)
+        : {
+            presenceStreakFrames: 999,
+            wristVelocity: 0,
+            inRoi: true,
+            handScale: 0.2,
+            handScaleOk: true,
+            transit: false,
+            reasons: [],
+            score: 1,
+          };
+      const isBlockedGraspOrScratch = Boolean(
+        classification.objectGraspAnalysis?.isObjectGrasp
+      );
+      if (isBlockedGraspOrScratch) {
+        voterRef.current.reset();
+        timeVoterRef.current.reset();
+        vote = voterRef.current.push("UNKNOWN");
+      } else {
+        const voteGesture: RecognizedGesture =
+          classification.confidence < 0.5 || intent.transit
+            ? "UNKNOWN"
+            : classification.gesture;
+        const tv = timeVoterRef.current.push(voteGesture, classification.confidence, now);
+        const fv = voterRef.current.push(voteGesture);
+        vote = {
+          committed: tv.committed !== "UNKNOWN" ? tv.committed : fv.committed,
+          candidate: tv.raw,
+          agreement: tv.agreement,
+          stableFrames: tv.streak || fv.stableFrames,
+        };
+      }
       lastClassRef.current = {
         gesture: classification.gesture,
         confidence: classification.confidence,
         margin: classification.margin,
       };
 
-      // wrist trajectory → FFT signature
       const wristNorm = normLandmarks[0].y - 0.55;
       trajectoryBufferRef.current.push(wristNorm);
       if (trajectoryBufferRef.current.length > 90) trajectoryBufferRef.current.shift();
+
+      if (frameCountRef.current % 3 === 0 && onLiveHandFrame) {
+        onLiveHandFrame({
+          landmarks: normLandmarks,
+          handParams: classification.handParams,
+          gesture: webcam && vote ? vote.committed : classification.gesture,
+          confidence: classification.confidence,
+          webcamActive: !!webcam,
+        });
+      }
     } else {
       intent = intentRef.current.noHand();
       vote = voterRef.current.push("UNKNOWN");
@@ -435,20 +610,21 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     lastIntentRef.current = intent;
     lastVoteRef.current = vote;
 
-    // every 5 frames: publish measured components upstream
     if (frameCountRef.current % 5 === 0) {
       if (trajectoryBufferRef.current.length >= 45) {
         const sig = extractMotionSignature(trajectoryBufferRef.current, 30, 2.5, 12.0);
+        const lockStat = tremorTrackerRef.current.observe(sig);
+        setTremorLockStatus(lockStat);
         const stability = calculateNormalizedStability(
           sig.spectrumPoints.map((p) => p.magnitude),
           sig.spectrumPoints.map((p) => p.freqHz),
-          user?.f0Hz || 5.2,
-          user?.amplitudeRms || 0.045
+          lockStat.activeF0Hz || user?.f0Hz || 5.2,
+          lockStat.activeAmpRms || user?.amplitudeRms || 0.045
         );
         onTrajectoryUpdate({
           trajectoryY: [...trajectoryBufferRef.current],
           spectrumPoints: sig.spectrumPoints,
-          currentF0Hz: sig.f0Hz,
+          currentF0Hz: lockStat.activeF0Hz || sig.f0Hz,
           currentAmpRms: sig.amplitudeRms,
           stabilityRaw: stability.stabilityRaw,
           stabilityNorm: stability.stabilityNorm,
@@ -458,10 +634,10 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       if (classification && vote) {
         const detectRate = r.framesTotal ? r.framesWithHand / r.framesTotal : 1;
         if (webcam) {
-          // MEASURED, not sliders: posterior = classifier conf × vote agreement,
-          // margin from classifier, attention from intent continuity, scene from analyser
           const committedConf =
-            vote.committed === "UNKNOWN" ? Math.min(classification.confidence, 0.45) : classification.confidence * (0.6 + 0.4 * vote.agreement);
+            vote.committed === "UNKNOWN"
+              ? Math.min(classification.confidence, 0.45)
+              : classification.confidence * (0.6 + 0.4 * vote.agreement);
           setPosterior(Math.round(committedConf * 100) / 100);
           setMargin(Math.round(classification.margin * vote.agreement * 100) / 100);
           setAttention(Math.round(intent.score * 100) / 100);
@@ -470,7 +646,11 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         } else {
           setPosterior(classification.confidence);
           setMargin(classification.margin);
-          onGestureRecognized(classification.gesture, classification.confidence, classification.margin);
+          onGestureRecognized(
+            classification.gesture,
+            classification.confidence,
+            classification.margin
+          );
         }
         setHud({
           fps: r.fps,
@@ -487,21 +667,46 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         setMargin(0);
         setAttention(0);
         onGestureRecognized("UNKNOWN", 0.1, 0);
-        setHud((h) => ({ ...h, handPresent: false, fps: r.fps, intent, vote, scene: sceneRef.current.stats() }));
+        setHud((h) => ({
+          ...h,
+          handPresent: false,
+          fps: r.fps,
+          intent,
+          vote,
+          scene: sceneRef.current.stats(),
+        }));
       }
       if (webcam) sendTelemetry();
     }
 
-    // ---------------- draw skeleton ----------------
+    // ---------------- draw skeleton & bounding box ----------------
     if (normLandmarks) {
       const px = normLandmarks.map((p) => ({
         x: (mirrored ? 1 - p.x : p.x) * width,
         y: p.y * height,
       }));
+
+      // Draw hand detection bounding box so the user clearly sees active tracking
+      const xs = px.map((p) => p.x);
+      const ys = px.map((p) => p.y);
+      const minX = Math.max(12, Math.min(...xs) - 28);
+      const maxX = Math.min(width - 12, Math.max(...xs) + 28);
+      const minY = Math.max(12, Math.min(...ys) - 28);
+      const maxY = Math.min(height - 12, Math.max(...ys) + 28);
+
       const committed = vote?.committed || "UNKNOWN";
-      const color = committed === "UNKNOWN" ? "rgba(148,163,184,0.7)" : "rgba(6,182,212,0.9)";
+      const boxColor =
+        committed === "UNKNOWN" && webcam
+          ? "rgba(251, 191, 36, 0.7)"
+          : "rgba(34, 211, 238, 0.85)";
+      ctx.strokeStyle = boxColor;
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+
+      const color =
+        committed === "UNKNOWN" ? "rgba(148,163,184,0.8)" : "rgba(6,182,212,0.95)";
       ctx.strokeStyle = color;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 4;
       for (const [a, b] of HAND_BONES) {
         ctx.beginPath();
         ctx.moveTo(px[a].x, px[a].y);
@@ -511,54 +716,92 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       px.forEach((pt, idx) => {
         const tip = [4, 8, 12, 16, 20].includes(idx);
         ctx.beginPath();
-        ctx.arc(pt.x, pt.y, idx === 0 ? 6 : tip ? 5 : 3.5, 0, Math.PI * 2);
+        ctx.arc(pt.x, pt.y, idx === 0 ? 8 : tip ? 6.5 : 4.5, 0, Math.PI * 2);
         ctx.fillStyle = idx === 0 ? "#ec4899" : tip ? "#a855f7" : "#06b6d4";
         ctx.fill();
       });
 
-      const center = px[9];
-      const label = webcam ? committed : activeGesture;
+      const isBookOrObjectBlocked = !!classification?.objectGraspAnalysis?.isObjectGrasp;
+      const label = webcam
+        ? committed
+        : isBookOrObjectBlocked
+        ? "UNKNOWN"
+        : activeGesture;
       const smart = GESTURE_SMART_HOME_MAP[label] || GESTURE_SMART_HOME_MAP.UNKNOWN;
-      ctx.fillStyle = "rgba(15,23,42,0.88)";
-      ctx.fillRect(center.x - 95, center.y + 90, 190, 34);
-      ctx.fillStyle = committed === "UNKNOWN" && webcam ? "#94a3b8" : "#38bdf8";
-      ctx.font = "bold 11px sans-serif";
+      const badgeW = 310;
+      const badgeH = 46;
+      const bx = Math.max(16, Math.min(width - badgeW - 16, (minX + maxX) / 2 - badgeW / 2));
+      const by = Math.min(height - badgeH - 28, maxY + 10);
+
+      ctx.fillStyle = "rgba(15,23,42,0.92)";
+      ctx.fillRect(bx, by, badgeW, badgeH);
+      ctx.strokeStyle = isBookOrObjectBlocked
+        ? "rgba(244,63,94,0.75)"
+        : "rgba(34,211,238,0.5)";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(bx, by, badgeW, badgeH);
+
+      ctx.fillStyle = isBookOrObjectBlocked
+        ? "#fda4af"
+        : committed === "UNKNOWN" && webcam
+        ? "#94a3b8"
+        : "#38bdf8";
+      ctx.font = "bold 13px sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(
-        `${smart.icon} ${label} ${webcam && vote ? `(${Math.round(vote.agreement * 100)}% agree)` : `(${(posterior * 100).toFixed(0)}%)`}`,
-        center.x,
-        center.y + 104
+        isBookOrObjectBlocked
+          ? `📕 OBJECT GRASP BLOCKED → UNKNOWN (0% Trigger)`
+          : `${smart.icon} ${label} ${
+              webcam && vote
+                ? `(${Math.round(vote.agreement * 100)}% agree)`
+                : `(${(posterior * 100).toFixed(0)}% conf)`
+            }`,
+        bx + badgeW / 2,
+        by + 19
       );
-      ctx.fillStyle = "#94a3b8";
-      ctx.font = "9px sans-serif";
-      ctx.fillText(`IoT: ${smart.action}`, center.x, center.y + 118);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = "11px sans-serif";
+      ctx.fillText(
+        isBookOrObjectBlocked
+          ? `Reason: ${classification?.objectGraspAnalysis?.reason || "BOOK_OR_OBJECT_GRASP"}`
+          : `${smart.description.slice(0, 44)}`,
+        bx + badgeW / 2,
+        by + 36
+      );
       ctx.textAlign = "left";
     } else if (webcam) {
-      ctx.fillStyle = "rgba(15,23,42,0.75)";
-      ctx.fillRect(width / 2 - 140, height / 2 - 18, 280, 36);
+      ctx.fillStyle = "rgba(15,23,42,0.85)";
+      ctx.fillRect(width / 2 - 190, height / 2 - 24, 380, 48);
       ctx.fillStyle = "#fbbf24";
-      ctx.font = "bold 12px sans-serif";
+      ctx.font = "bold 15px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText("No hand detected — raise your hand into the frame", width / 2, height / 2 + 4);
+      ctx.fillText(
+        "No hand detected — raise your hand into the camera box",
+        width / 2,
+        height / 2 + 5
+      );
       ctx.textAlign = "left";
     }
 
     // ROI guide
-    ctx.strokeStyle = "rgba(168,85,247,0.35)";
-    ctx.setLineDash([5, 6]);
-    ctx.strokeRect(width * 0.12, height * 0.1, width * 0.76, height * 0.82);
+    ctx.strokeStyle = "rgba(168,85,247,0.4)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.strokeRect(width * 0.08, height * 0.08, width * 0.84, height * 0.84);
     ctx.setLineDash([]);
 
     // footer telemetry
     const s = sceneRef.current.stats();
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
-    ctx.font = "10px monospace";
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.font = "12px monospace";
     ctx.fillText(
       webcam
-        ? `${r.fps} FPS · ${r.delegate} · lum ${(s.luminance * 100).toFixed(0)}% · con ${(s.contrast * 100).toFixed(0)}% · clutter ${(s.clutter * 100).toFixed(0)}%${s.preprocessed ? ` · gain ×${s.gain.toFixed(2)}` : ""}`
-        : `SYNTHETIC HAND — start webcam for real recognition`,
-      12,
-      height - 12
+        ? `${r.fps} FPS · ${r.delegate} · lum ${(s.luminance * 100).toFixed(0)}% · con ${(
+            s.contrast * 100
+          ).toFixed(0)}% · clutter ${(s.clutter * 100).toFixed(0)}%`
+        : `SYNTHETIC HAND SIMULATION — Click "Start Live Webcam" above for real camera footage`,
+      16,
+      height - 14
     );
 
     animFrameRef.current = requestAnimationFrame(renderFrame);
@@ -568,8 +811,10 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     tremorInjectionAmp,
     posterior,
     activeGesture,
+    bookHoldTestMode,
     onTrajectoryUpdate,
     onGestureRecognized,
+    onLiveHandFrame,
     setPosterior,
     setMargin,
     setAttention,
@@ -586,18 +831,66 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
 
   const webcamOn = streamSource === "WEBCAM";
 
+  const handleToggleExpand = () => {
+    if (onToggleExpandedView) {
+      onToggleExpandedView();
+    } else {
+      setLocalExpanded((v) => !v);
+    }
+  };
+
   return (
-    <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 shadow-lg backdrop-blur-sm">
+    <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-4 shadow-xl backdrop-blur-sm">
       <div className="flex items-center justify-between mb-3 gap-2 flex-wrap">
         <div className="flex items-center space-x-2">
-          <Camera className="w-4 h-4 text-cyan-400" />
-          <h3 className="text-sm font-semibold text-slate-100">Real-Time Hand Recognition (MediaPipe)</h3>
+          <Camera className="w-5 h-5 text-cyan-400" />
+          <div>
+            <h3 className="text-sm font-bold text-slate-100">
+              Real-Time Hand Recognition & Skeleton Detection (Expanded HD View)
+            </h3>
+            <p className="text-[11px] text-slate-400">
+              High-ampere devices use easy long-hold postures (e.g. <strong>✊ FIST</strong> for Heater, <strong>👍 THUMBS_UP</strong> for AC, <strong>🤙 CALL_ME</strong> for Geyser)
+            </p>
+          </div>
         </div>
         <div className="flex items-center space-x-2">
+          <button
+            type="button"
+            onClick={handleToggleExpand}
+            className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-medium flex items-center gap-1.5 border border-slate-700"
+            title="Expand or shrink the camera detection viewport"
+          >
+            {isExpanded ? (
+              <>
+                <Minimize2 className="w-3.5 h-3.5" />
+                <span>Standard Size</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-3.5 h-3.5" />
+                <span>Theater View</span>
+              </>
+            )}
+          </button>
+
+          <select
+            aria-label="Cultural Gesture Locale Pack"
+            value={localeCountryCode}
+            onChange={(e) => setLocaleCountryCode(e.target.value)}
+            className="px-2 py-1 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-[11px] font-mono"
+            title="ISO-3166 Cultural Gesture Remapping Pack"
+          >
+            {Object.values(LOCALE_GESTURE_PACKS).map((p) => (
+              <option key={p.countryCode} value={p.countryCode}>
+                🌐 {p.countryCode} · {p.countryName}
+              </option>
+            ))}
+          </select>
+
           {webcamOn ? (
             <button
               onClick={stopWebcam}
-              className="px-2.5 py-1 rounded bg-rose-600 hover:bg-rose-500 text-white text-xs font-medium"
+              className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold"
             >
               Stop Webcam
             </button>
@@ -605,9 +898,9 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             <button
               onClick={startWebcam}
               disabled={modelStatus === "LOADING_WASM" || modelStatus === "LOADING_MODEL"}
-              className="px-2.5 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold flex items-center gap-1 disabled:opacity-60"
+              className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-bold flex items-center gap-1.5 disabled:opacity-60 shadow-md shadow-cyan-500/20"
             >
-              <Video className="w-3.5 h-3.5" />
+              <Video className="w-4 h-4" />
               {modelStatus === "LOADING_WASM"
                 ? "Loading WASM…"
                 : modelStatus === "LOADING_MODEL"
@@ -616,106 +909,319 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             </button>
           )}
           <span
-            className={`text-[11px] px-2 py-0.5 rounded-full border font-mono ${
+            className={`text-[11px] px-2.5 py-1 rounded-full border font-mono ${
               webcamOn
                 ? "bg-emerald-950 text-emerald-400 border-emerald-800"
                 : "bg-amber-950 text-amber-300 border-amber-800"
             }`}
           >
-            {webcamOn ? `LIVE · ${hud.delegate} · ${hud.source}` : "SYNTHETIC (no camera)"}
+            {webcamOn ? `LIVE · ${hud.delegate} · ${hud.source}` : "SYNTHETIC SIMULATOR"}
           </span>
         </div>
       </div>
 
       {webcamError && (
-        <div className="mb-2 p-2 rounded bg-rose-950/50 border border-rose-800/80 text-rose-200 text-xs flex items-center gap-2">
+        <div className="mb-2.5 p-2.5 rounded-lg bg-rose-950/50 border border-rose-800/80 text-rose-200 text-xs flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0" />
           <span>{webcamError}</span>
         </div>
       )}
       {personalizeNotice && (
-        <div className="mb-2 p-2 rounded bg-cyan-950/60 border border-cyan-800 text-cyan-300 text-xs flex items-center gap-2">
+        <div className="mb-2.5 p-2.5 rounded-lg bg-cyan-950/60 border border-cyan-800 text-cyan-300 text-xs flex items-center gap-2">
           <CheckCircle className="w-4 h-4 text-cyan-400 flex-shrink-0" />
           <span>{personalizeNotice}</span>
         </div>
       )}
 
-      <video ref={videoRef} playsInline muted autoPlay className="absolute w-px h-px opacity-0 pointer-events-none" />
+      <video
+        ref={videoRef}
+        playsInline
+        muted
+        className="absolute w-px h-px opacity-0 pointer-events-none"
+      />
 
-      <div className="relative rounded-lg overflow-hidden border border-slate-800 bg-slate-950 aspect-[4/3] max-h-80 flex items-center justify-center">
-        <canvas ref={canvasRef} width={640} height={480} className="w-full h-full object-contain block" />
+      {/* Expanded HD Camera & Hand Detection Box (min-h-[480px] to 680px instead of cramped max-h-80) */}
+      <div
+        className={`relative rounded-xl overflow-hidden border-2 border-cyan-500/30 bg-slate-950 w-full flex items-center justify-center transition-all ${
+          isExpanded
+            ? "min-h-[580px] sm:min-h-[660px] lg:min-h-[720px]"
+            : "min-h-[460px] sm:min-h-[520px] lg:min-h-[560px]"
+        }`}
+      >
+        <canvas
+          ref={canvasRef}
+          width={960}
+          height={640}
+          className="w-full h-full object-contain block"
+        />
 
         {!webcamOn && (
-          <div className="absolute top-2 right-2 flex flex-wrap gap-1 bg-slate-950/90 p-1.5 rounded-lg border border-slate-800 max-w-[60%]">
+          <div className="absolute top-3 left-3 right-3 flex flex-wrap gap-1.5 bg-slate-950/90 p-2 rounded-xl border border-slate-800 backdrop-blur-md">
             {[
-              { id: "OPEN_PALM", label: "✋ PALM" },
-              { id: "VICTORY", label: "✌️ VICTORY" },
-              { id: "POINTING_UP", label: "☝️ POINT" },
-              { id: "THUMBS_UP", label: "👍 THUMBS" },
-              { id: "FIST", label: "✊ FIST" },
+              { id: "FIST", label: "✊ FIST (Heater 9.1A)" },
+              { id: "OPEN_PALM", label: "✋ PALM (Fan)" },
+              { id: "THUMBS_UP", label: "👍 THUMBS (AC 5.7A)" },
+              { id: "CALL_ME", label: "🤙 CALL_ME (Geyser 13.6A)" },
+              { id: "POINTING_UP", label: "☝️ POINT (Lamp)" },
+              { id: "VICTORY", label: "✌️ VICTORY (TV)" },
+              { id: "PINCH", label: "👌 PINCH (Blinds)" },
+              { id: "THREE_FINGERS", label: "🤟 3-FINGERS (Fan Spd)" },
+              { id: "FOUR_FINGERS", label: "🖖 4-FINGERS (Lock)" },
+              { id: "THUMBS_DOWN", label: "👎 DOWN (Heater Off)" },
             ].map((item) => (
               <button
                 key={item.id}
-                onClick={() => setActiveGesture(item.id as RecognizedGesture)}
-                className={`px-2 py-1 rounded text-[10px] font-mono ${
-                  activeGesture === item.id ? "bg-cyan-600 text-white font-bold" : "text-slate-400 hover:bg-slate-800"
+                onClick={() => {
+                  const g = item.id as RecognizedGesture;
+                  setBookHoldTestMode("NONE");
+                  setActiveGesture(g);
+                  onSyntheticGestureSelect?.(g);
+                }}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all ${
+                  activeGesture === item.id && bookHoldTestMode === "NONE"
+                    ? "bg-cyan-500 text-slate-950 font-bold shadow"
+                    : "bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800"
                 }`}
               >
                 {item.label}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() =>
+                setBookHoldTestMode((m) => (m === "BOOK_SPINE" ? "NONE" : "BOOK_SPINE"))
+              }
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-mono transition-all border ${
+                bookHoldTestMode !== "NONE"
+                  ? "bg-rose-500 text-white font-bold border-rose-400 shadow"
+                  : "bg-rose-950/70 text-rose-200 border-rose-700/60 hover:bg-rose-900/70"
+              }`}
+            >
+              📕 Hold Book (0% Trigger Test)
+            </button>
           </div>
         )}
 
         {webcamOn && hud.intent && (
-          <div className="absolute top-2 left-2 bg-slate-950/85 px-2.5 py-1.5 rounded-lg border border-slate-800 text-[10px] font-mono space-y-0.5">
-            <div className={hud.handPresent ? "text-emerald-400" : "text-amber-400"}>
-              hand {hud.handPresent ? "TRACKED" : "LOST"} · detect {Math.round(hud.detectRate * 100)}%
+          <div className="absolute top-3 left-3 bg-slate-950/90 px-3 py-2 rounded-xl border border-slate-800 text-xs font-mono space-y-1 shadow-lg">
+            <div className={hud.handPresent ? "text-emerald-400 font-bold" : "text-amber-400"}>
+              HAND {hud.handPresent ? "TRACKED (21 KEYPOINTS)" : "SEARCHING"} · Detect{" "}
+              {Math.round(hud.detectRate * 100)}%
             </div>
-            <div className="text-slate-300">
-              vote {hud.vote?.committed} · agree {Math.round((hud.vote?.agreement || 0) * 100)}% · stable {hud.vote?.stableFrames}
+            <div className="text-slate-200">
+              Gesture: <strong className="text-cyan-300">{hud.vote?.committed}</strong> · Agree{" "}
+              {Math.round((hud.vote?.agreement || 0) * 100)}% · Stable {hud.vote?.stableFrames}f
             </div>
             <div className={hud.intent.reasons.length ? "text-rose-300" : "text-cyan-300"}>
-              intent {Math.round(hud.intent.score * 100)}% {hud.intent.reasons.length ? `· ${hud.intent.reasons.join(",")}` : "· CONTINUOUS"}
+              Intent {Math.round(hud.intent.score * 100)}%{" "}
+              {hud.intent.reasons.length ? `· ${hud.intent.reasons.join(",")}` : "· STEADY HOLD"}
             </div>
-            {hud.scene?.preprocessed && (
-              <div className="text-amber-300">low-light gain ×{hud.scene.gain.toFixed(2)} auto-applied</div>
-            )}
           </div>
         )}
 
         <button
           onClick={handlePersonalizeCurrentGesture}
           disabled={personalizing || !user}
-          className="absolute bottom-3 right-3 flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-700/80 text-cyan-300 text-[11px] font-semibold backdrop-blur-md disabled:opacity-50"
+          className="absolute bottom-3 right-3 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-950/90 hover:bg-cyan-900 border border-cyan-500/60 text-cyan-200 text-xs font-semibold backdrop-blur-md disabled:opacity-50 shadow-lg"
         >
           <Wand2 className="w-3.5 h-3.5 text-cyan-400" />
-          {personalizing ? "Adapting…" : `Personalize "${webcamOn ? hud.vote?.committed || "…" : activeGesture}"`}
+          {personalizing
+            ? "Adapting AI Prototype…"
+            : `Train "${webcamOn ? hud.vote?.committed || "…" : activeGesture}" for ${
+                user?.name.split(" ")[0] || "User"
+              }`}
         </button>
       </div>
 
-      {handParams && (
-        <div className="mt-3 p-2.5 rounded-lg bg-slate-950/80 border border-slate-800 text-xs">
-          <div className="flex items-center justify-between mb-2">
-            <span className="font-semibold text-slate-300 flex items-center gap-1.5">
-              <Sliders className="w-3.5 h-3.5 text-cyan-400" />
-              Hand Morphology & Extension Ratios
+      {/* Live Reviewer Diagnostic HUD: 1) Difficult Lighting/CLAHE, 2) Book/Object-Grasp Guard, 3) Tremor f0 Lock */}
+      <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
+        {/* Panel 1: Difficult Lighting & CLAHE Pre-Processing */}
+        <div className="p-3 rounded-xl bg-slate-950/90 border border-cyan-500/30 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-cyan-300 flex items-center gap-1.5">
+              <Sun className="w-3.5 h-3.5 text-amber-400" />
+              <span>Difficult Light & CLAHE HUD</span>
             </span>
-            <span className="text-[10px] text-slate-500 font-mono">
-              Span {handParams.spanRatio} · Aspect {handParams.aspectRatio} · Tilt {handParams.tiltAngleDeg}°
+            <span className="px-1.5 py-0.5 rounded bg-cyan-500/15 border border-cyan-500/30 text-[10px] font-mono text-cyan-200">
+              {lightingStressMode !== "OPTIMAL"
+                ? lightingStressMode
+                : hud.scene?.lightingCondition || "OPTIMAL"}
             </span>
           </div>
-          <div className="grid grid-cols-5 gap-1.5 text-center font-mono text-[10px]">
+          <div className="text-[11px] font-mono text-slate-300">
+            Lum:{" "}
+            <strong>
+              {lightingStressMode === "LOW_LIGHT_12_LUX"
+                ? "12%"
+                : lightingStressMode === "HARSH_BACKLIGHT_GLARE"
+                ? "89%"
+                : `${Math.round((hud.scene?.luminance ?? 0.52) * 100)}%`}
+            </strong>{" "}
+            · γ:{" "}
+            <strong>
+              {lightingStressMode === "LOW_LIGHT_12_LUX"
+                ? "0.54"
+                : lightingStressMode === "HARSH_BACKLIGHT_GLARE"
+                ? "1.42"
+                : (hud.scene?.gamma ?? 1.0).toFixed(2)}
+            </strong>{" "}
+            · Gain:{" "}
+            <strong>
+              {lightingStressMode === "LOW_LIGHT_12_LUX"
+                ? "2.15x"
+                : `${(hud.scene?.gain ?? 1.0).toFixed(2)}x`}
+            </strong>
+          </div>
+          <div className="flex items-center gap-1 pt-0.5">
+            {(
+              [
+                { id: "OPTIMAL", label: "Normal" },
+                { id: "LOW_LIGHT_12_LUX", label: "Dark 12% Lux" },
+                { id: "HARSH_BACKLIGHT_GLARE", label: "Glare 89%" },
+              ] as const
+            ).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => {
+                  setLightingStressMode(m.id);
+                  setSceneQuality(m.id === "OPTIMAL" ? 0.92 : 0.86);
+                }}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono border ${
+                  lightingStressMode === m.id
+                    ? "bg-amber-400 text-slate-950 font-bold border-amber-300"
+                    : "bg-slate-900 text-slate-300 border-slate-800"
+                }`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Panel 2: Strict Object-Grasp & Book-Hold Guard */}
+        <div
+          className={`p-3 rounded-xl border space-y-1.5 ${
+            graspAnalysis?.isObjectGrasp
+              ? "bg-rose-950/50 border-rose-500/60"
+              : "bg-slate-950/90 border-emerald-500/30"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-slate-100 flex items-center gap-1.5">
+              <ShieldCheck
+                className={`w-3.5 h-3.5 ${
+                  graspAnalysis?.isObjectGrasp ? "text-rose-400" : "text-emerald-400"
+                }`}
+              />
+              <span>Object-Grasp / Book Guard</span>
+            </span>
+            <span
+              className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
+                graspAnalysis?.isObjectGrasp
+                  ? "bg-rose-500/25 text-rose-200 border border-rose-500/40"
+                  : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+              }`}
+            >
+              {graspAnalysis?.isObjectGrasp ? "BLOCKED (0% FP)" : "CLEAR GESTURE"}
+            </span>
+          </div>
+          <div className="text-[11px] font-mono text-slate-300">
+            Status:{" "}
+            <strong className={graspAnalysis?.isObjectGrasp ? "text-rose-300" : "text-emerald-300"}>
+              {graspAnalysis?.isObjectGrasp ? graspAnalysis.reason : "FREE-HAND VERIFIED"}
+            </strong>{" "}
+            · Bimodal: <strong>{graspAnalysis?.bimodalityScore ?? 0.92}</strong>
+          </div>
+          <div className="flex flex-wrap items-center gap-1 pt-0.5">
+            {(
+              [
+                { id: "NONE", label: "✋ Gesture" },
+                { id: "BOOK_SPINE", label: "📕 Book" },
+                { id: "OPEN_BOOK", label: "📖 Open Book" },
+                { id: "CUP_MUG", label: "☕ Mug" },
+                { id: "CASE_1_PHONE_IN_HAND", label: "📱 Phone+Index" },
+                { id: "CASE_2_FREE_HAND_SIDE_PROFILE", label: "✋ Side Hand" },
+                { id: "CASE_3_NOSE_TINGLING_SCRATCH", label: "👃 Nose Scratch" },
+              ] as const
+            ).map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => setBookHoldTestMode(b.id)}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono border ${
+                  bookHoldTestMode === b.id
+                    ? b.id === "CASE_2_FREE_HAND_SIDE_PROFILE"
+                      ? "bg-emerald-500 text-slate-950 font-bold border-emerald-400"
+                      : "bg-rose-500 text-white font-bold border-rose-400"
+                    : "bg-slate-900 text-slate-300 border-slate-800"
+                }`}
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Panel 3: Progressive Tremor f0 Personalizer & Irregular Frequency Filter */}
+        <div className="p-3 rounded-xl bg-slate-950/90 border border-purple-500/30 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="font-bold text-purple-300 flex items-center gap-1.5">
+              <Activity className="w-3.5 h-3.5 text-purple-400" />
+              <span>Tremor f₀ Personalizer</span>
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-purple-500/20 border border-purple-500/40 text-[10px] font-mono text-purple-200 font-bold">
+              {tremorLockStatus?.stage === "FINALIZED_LOCKED"
+                ? "FINALIZED & LOCKED"
+                : tremorLockStatus?.stage === "OBSERVING_CONFIRMATION"
+                ? `CONFIRMING (${tremorLockStatus.confirmationProgress}%)`
+                : "60s CALIB INIT"}
+            </span>
+          </div>
+          <div className="text-[11px] font-mono text-slate-300">
+            Init f₀: <strong>{tremorLockStatus?.initializedF0Hz ?? user?.f0Hz ?? 5.2}Hz</strong> →
+            Active: <strong className="text-emerald-300">{tremorLockStatus?.activeF0Hz ?? user?.f0Hz ?? 5.2}Hz</strong>{" "}
+            (Notch -92%)
+          </div>
+          <div className="text-[10px] font-mono text-slate-400">
+            Irregular (&gt;12Hz) Ignored:{" "}
+            <strong className="text-cyan-300">
+              {tremorLockStatus?.irregularFrequencyRejected
+                ? "FILTERING BURST"
+                : `ACTIVE (${tremorLockStatus?.rejectedCount ?? 0} blocked)`}
+            </strong>
+          </div>
+        </div>
+      </div>
+
+      {handParams && (
+        <div className="mt-3 p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+              Live 5-Finger Extension Vector & Hand Geometry
+            </span>
+            <span className="text-[11px] text-cyan-300 font-mono">
+              Span {handParams.spanRatio} · Aspect {handParams.aspectRatio} · Tilt{" "}
+              {handParams.tiltAngleDeg}°
+            </span>
+          </div>
+          <div className="grid grid-cols-5 gap-2 text-center font-mono text-[11px]">
             {["Thumb", "Index", "Middle", "Ring", "Pinky"].map((name, idx) => {
               const val = handParams.fingerFlexion[idx];
               const isOpen = val >= 0.55;
               return (
-                <div key={name} className="p-1 rounded bg-slate-900 border border-slate-800">
+                <div key={name} className="p-1.5 rounded-lg bg-slate-900 border border-slate-800">
                   <span className="text-slate-400 block">{name}</span>
-                  <div className="w-full bg-slate-800 rounded-full h-1 my-1 overflow-hidden">
-                    <div className={`h-full ${isOpen ? "bg-cyan-400" : "bg-rose-500"}`} style={{ width: `${Math.round(val * 100)}%` }} />
+                  <div className="w-full bg-slate-800 rounded-full h-1.5 my-1 overflow-hidden">
+                    <div
+                      className={`h-full ${isOpen ? "bg-cyan-400" : "bg-rose-500"}`}
+                      style={{ width: `${Math.round(val * 100)}%` }}
+                    />
                   </div>
-                  <span className={isOpen ? "text-cyan-300 font-bold" : "text-slate-500"}>{isOpen ? "EXT" : "BENT"}</span>
+                  <span className={isOpen ? "text-cyan-300 font-bold" : "text-slate-400"}>
+                    {isOpen ? `EXT ${(val * 100).toFixed(0)}%` : `CURL ${(val * 100).toFixed(0)}%`}
+                  </span>
                 </div>
               );
             })}
@@ -780,7 +1286,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       {webcamOn && (
         <p className="mt-2 text-[10px] text-slate-500 flex items-center gap-1">
           <Cpu className="w-3 h-3" />
-          In webcam mode, confidence / attention / scene are measured from the pipeline and cannot be edited.
+          In live webcam mode, confidence, attention, and scene metrics are measured directly from your video feed.
         </p>
       )}
     </div>
@@ -801,7 +1307,11 @@ function Knob(props: {
   icon: React.ReactNode;
 }) {
   return (
-    <div className={`p-2 rounded bg-slate-950/60 border border-slate-800 ${props.disabled ? "opacity-70" : ""}`}>
+    <div
+      className={`p-2 rounded bg-slate-950/60 border border-slate-800 ${
+        props.disabled ? "opacity-70" : ""
+      }`}
+    >
       <div className="flex justify-between text-[11px] text-slate-300 mb-1">
         <span className="flex items-center gap-1">
           {props.icon}

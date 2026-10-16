@@ -1,0 +1,17 @@
+{
+  "subagent": "S10",
+  "owner": "M3",
+  "status": "COMPLETED",
+  "scope": ["src/lib/hardware/lan-bridge.ts", "src/app/api/actuate/route.ts"],
+  "exports": ["dispatchLanActuation", "globalActuatorCircuitBreaker"],
+  "invariantsVerified": {
+    "driversSupported": [
+      "HOME_ASSISTANT_LAN",
+      "MQTT_HTTP_TASMO",
+      "MATTER_LOCAL_RPC",
+      "LOCAL_DB_SIMULATOR"
+    ],
+    "abortTimeoutMs": 800,
+    "tier3ChordGateEnforced": true
+  }
+}

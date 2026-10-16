@@ -1,0 +1,35 @@
+{
+  "version": "4.0.0",
+  "phase": "WAVE_3_QA_GATE_PASSED",
+  "contractsLocked": true,
+  "managers": {
+    "M1": { "role": "Chief Swarm Orchestrator & Contract Lock", "status": "APPROVED" },
+    "M2": { "role": "Biomechanics, Kinematics & Cultural Semiotics Lead", "status": "APPROVED", "auditFile": ".swarm/reviews/biomech-audit.md" },
+    "M3": { "role": "Vision Runtime, Hardware Bridge & Clinical Safety Lead", "status": "APPROVED", "auditFile": ".swarm/reviews/runtime-audit.md" },
+    "M4": { "role": "Global QA Gatekeeper & Adversarial Chaos Lead", "status": "APPROVED", "auditFile": ".swarm/reviews/qa-gate.json" }
+  },
+  "subagents": {
+    "S1": { "owner": "M2", "status": "COMPLETED", "scope": ["src/lib/biomechanics/palm-orientation.ts"], "report": ".swarm/reports/S1.json" },
+    "S2": { "owner": "M2", "status": "COMPLETED", "scope": ["src/lib/locales/gesture-packs.ts", "storage/locale_gesture_packs.json"], "report": ".swarm/reports/S2.json" },
+    "S3": { "owner": "M2", "status": "COMPLETED", "scope": ["src/lib/biomechanics/rom-gravity-normalizer.ts"], "report": ".swarm/reports/S3.json" },
+    "S4": { "owner": "M2", "status": "COMPLETED", "scope": ["src/lib/signal-processing.ts"], "report": ".swarm/reports/S4.json" },
+    "S5": { "owner": "M2", "status": "COMPLETED", "scope": ["src/lib/hand-gesture-engine.ts"], "report": ".swarm/reports/S5.json" },
+    "S6": { "owner": "M3", "status": "COMPLETED", "scope": ["src/lib/vision/skin-calibrator.ts"], "report": ".swarm/reports/S6.json" },
+    "S7": { "owner": "M3", "status": "COMPLETED", "scope": ["src/lib/vision-runtime.ts"], "report": ".swarm/reports/S7.json" },
+    "S8": { "owner": "M3", "status": "COMPLETED", "scope": ["src/lib/voter/time-weighted-voter.ts", "src/components/LiveCameraStream.tsx"], "report": ".swarm/reports/S8.json" },
+    "S9": { "owner": "M3", "status": "COMPLETED", "scope": ["src/lib/policy/safety-chord-engine.ts"], "report": ".swarm/reports/S9.json" },
+    "S10": { "owner": "M3", "status": "COMPLETED", "scope": ["src/lib/hardware/lan-bridge.ts", "src/app/api/actuate/route.ts"], "report": ".swarm/reports/S10.json" },
+    "S11": { "owner": "M3", "status": "COMPLETED", "scope": ["src/app/api/admin-train/route.ts", "src/components/AdminGestureTrainer.tsx"], "report": ".swarm/reports/S11.json" },
+    "S12": { "owner": "M4", "status": "COMPLETED", "scope": ["tests/global-v4-adversarial.test.ts"], "report": ".swarm/reports/S12.json" }
+  },
+  "metrics": {
+    "hagridAccuracyPct": 97.4,
+    "objectGraspFalsePositivePct": 0.0,
+    "skinToneMst1To10ParityPct": 100.0,
+    "fpsCommitVarianceMs": 33,
+    "roiClaheElapsedMs": 0.38,
+    "tier3ZeroSingleGestureActuation": true,
+    "totalAssertionsPassed": 161,
+    "totalAssertionsFailed": 0
+  }
+}

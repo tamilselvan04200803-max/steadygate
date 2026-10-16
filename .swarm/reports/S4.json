@@ -1,0 +1,17 @@
+{
+  "subagent": "S4",
+  "owner": "M2",
+  "status": "COMPLETED",
+  "scope": ["src/lib/signal-processing.ts"],
+  "exports": [
+    "extractMotionSignature",
+    "AdaptiveTremorFrequencyTracker",
+    "computeIntrinsicPostureStability",
+    "calculateNormalizedStability"
+  ],
+  "invariantsVerified": {
+    "nyquistUpperBin": "Math.min(15.0, sampleRateHz * 0.495)",
+    "dyskinesiaBandHz": "[0.8, 3.2]",
+    "intrinsicStabilityGate": ">= 0.82 (attenuated by 88% when fingers hold steady)"
+  }
+}

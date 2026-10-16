@@ -1,0 +1,12 @@
+{
+  "subagent": "S6",
+  "owner": "M3",
+  "status": "COMPLETED",
+  "scope": ["src/lib/vision/skin-calibrator.ts"],
+  "exports": ["MONK_SKIN_TONE_RGB_REFERENCE", "rgbToYCbCr", "AdaptiveSkinCalibrator"],
+  "invariantsVerified": {
+    "mstRange": "MST 1 to MST 10",
+    "mahalanobisThreshold": "distSq <= 4.5",
+    "backgroundWoodWallSubtraction": true
+  }
+}

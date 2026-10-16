@@ -2,11 +2,19 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { users, calibrationEvents } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { appendJsonlLog, upsertPersonalizedUserStorage } from "@/lib/storage-logger";
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { userId, gestureToCalibrate, palmScale, fingerFlexibility, currentConfidence } = body;
+    const {
+      userId,
+      gestureToCalibrate,
+      palmScale,
+      fingerFlexibility,
+      currentConfidence,
+      handParams,
+    } = body;
 
     if (!userId) {
       return NextResponse.json({ success: false, error: "userId is required" }, { status: 400 });
@@ -28,10 +36,8 @@ export async function POST(req: Request) {
       }
     }
 
-    // Adapt prototype for the specified gesture
     if (gestureToCalibrate) {
       const existing = prototypes[gestureToCalibrate] || { confidenceBoost: 1.0, flexTol: 0.2 };
-      // Increase confidence boost for user's personal gesture execution
       prototypes[gestureToCalibrate] = {
         confidenceBoost: Math.min(1.25, Math.round((existing.confidenceBoost + 0.05) * 100) / 100),
         flexTol: Math.min(0.35, Math.round((existing.flexTol + 0.03) * 100) / 100),
@@ -40,7 +46,6 @@ export async function POST(req: Request) {
 
     const updatedPalmScale =
       palmScale !== undefined ? palmScale : currentUser.palmScale || 1.0;
-    // AdaptLearner clamp: fingerFlexibility ∈ [0.75, 1.15]
     const rawFlex =
       fingerFlexibility !== undefined
         ? fingerFlexibility
@@ -64,19 +69,36 @@ export async function POST(req: Request) {
       newAmplitude: currentUser.amplitudeRms,
       f0Hz: currentUser.f0Hz,
       reason: gestureToCalibrate
-        ? `Personalized Prototype Adaptation for ${gestureToCalibrate}`
+        ? `Personalized Prototype Adaptation for ${gestureToCalibrate} (conf=${currentConfidence ?? "N/A"})`
         : `Personal Hand Parameterization Update`,
     });
 
     const updatedUser = await db.select().from(users).where(eq(users.id, userId));
+
+    appendJsonlLog("user_observations.jsonl", {
+      event: "gesture_prototype_personalized",
+      userId,
+      userName: updatedUser[0].name,
+      gestureToCalibrate,
+      palmScale: updatedPalmScale,
+      fingerFlexibility: updatedFingerFlexibility,
+      currentConfidence,
+      handParams: handParams || null,
+      prototypes,
+    });
+    upsertPersonalizedUserStorage({
+      ...updatedUser[0],
+      latestHandMorphology: handParams || null,
+      personalizedPrototypesParsed: prototypes,
+    });
 
     return NextResponse.json({
       success: true,
       user: updatedUser[0],
       prototypes,
       message: gestureToCalibrate
-        ? `Model adapted to personalized execution of ${gestureToCalibrate}!`
-        : `Hand parameters updated!`,
+        ? `Model adapted to personalized execution of ${gestureToCalibrate} and saved to storage!`
+        : `Hand parameters updated and saved to storage!`,
     });
   } catch (error) {
     console.error("POST /api/personalize error:", error);

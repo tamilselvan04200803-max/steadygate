@@ -1,0 +1,73 @@
+{
+  "id": "user_1792032741893",
+  "name": "Enrolled Participant",
+  "condition": "Parkinsonian Resting & Postural Tremor (5.4 Hz)",
+  "f0Hz": 5.2,
+  "amplitudeRms": 0.028,
+  "notchBandwidthHz": 2,
+  "attentionFloor": 0.65,
+  "adaptiveDwellFactor": 1.22,
+  "medicationPhase": "Baseline",
+  "palmScale": 1,
+  "fingerFlexibility": 0.94,
+  "personalizedPrototypes": "{\"OPEN_PALM\":{\"confidenceBoost\":1.08,\"flexTol\":0.24},\"POINTING_UP\":{\"confidenceBoost\":1.07,\"flexTol\":0.23},\"VICTORY\":{\"confidenceBoost\":1.06,\"flexTol\":0.22},\"THUMBS_UP\":{\"confidenceBoost\":1.09,\"flexTol\":0.25},\"THUMBS_DOWN\":{\"confidenceBoost\":1.07,\"flexTol\":0.24},\"PINCH\":{\"confidenceBoost\":1.06,\"flexTol\":0.22},\"FIST\":{\"confidenceBoost\":1.1,\"flexTol\":0.26}}",
+  "lastCalibratedAt": "2026-10-15T02:52:24.691Z",
+  "createdAt": "2026-10-15T02:52:24.691Z",
+  "enrolmentSummary": {
+    "calibId": "calib_1792032744692_rpg7",
+    "userId": "user_1792032741893",
+    "userName": "Enrolled Participant",
+    "condition": "Parkinsonian Resting & Postural Tremor (5.4 Hz)",
+    "medicationPhase": "Baseline",
+    "durationSec": 60,
+    "sampleCount": 1800,
+    "sampleRateHz": 30,
+    "signature": {
+      "f0Hz": 5.2,
+      "amplitudeRms": 0.028,
+      "totalEnergy": 0.029,
+      "notchBandwidthHz": 2,
+      "adaptiveDwellFactor": 1.22,
+      "attentionFloor": 0.65
+    },
+    "handMorphology": {
+      "palmScale": 1,
+      "fingerFlexibility": 0.94,
+      "rawSamples": null
+    },
+    "gestureObservations": null,
+    "personalizedPrototypes": {
+      "OPEN_PALM": {
+        "confidenceBoost": 1.08,
+        "flexTol": 0.24
+      },
+      "POINTING_UP": {
+        "confidenceBoost": 1.07,
+        "flexTol": 0.23
+      },
+      "VICTORY": {
+        "confidenceBoost": 1.06,
+        "flexTol": 0.22
+      },
+      "THUMBS_UP": {
+        "confidenceBoost": 1.09,
+        "flexTol": 0.25
+      },
+      "THUMBS_DOWN": {
+        "confidenceBoost": 1.07,
+        "flexTol": 0.24
+      },
+      "PINCH": {
+        "confidenceBoost": 1.06,
+        "flexTol": 0.22
+      },
+      "FIST": {
+        "confidenceBoost": 1.1,
+        "flexTol": 0.26
+      }
+    },
+    "notes": "60s comprehensive personal enrolment"
+  },
+  "updatedAt": "2026-10-15T02:52:24.699Z",
+  "observationSnapshotsCount": 1
+}

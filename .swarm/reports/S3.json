@@ -1,0 +1,11 @@
+{
+  "subagent": "S3",
+  "owner": "M2",
+  "status": "COMPLETED",
+  "scope": ["src/lib/biomechanics/rom-gravity-normalizer.ts"],
+  "exports": ["normalizeFingerROM", "projectOntoTorsoGravity", "AdaptiveRomCalibrator"],
+  "invariantsVerified": {
+    "safeDenominatorFloor": "Math.max(minV + 0.25, maxV)",
+    "bedInclineRangeDeg": "[-60, 60]"
+  }
+}

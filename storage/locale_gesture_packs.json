@@ -1,0 +1,163 @@
+{
+  "version": "4.0.0-global",
+  "defaultCountryCode": "US",
+  "packs": {
+    "US": {
+      "countryCode": "US",
+      "countryName": "United States (Global Standard)",
+      "region": "North America",
+      "restrictedGestures": [],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {},
+      "culturalNotes": "Standard 10-gesture canonical mapping."
+    },
+    "IN": {
+      "countryCode": "IN",
+      "countryName": "India",
+      "region": "South Asia",
+      "restrictedGestures": [],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {},
+      "culturalNotes": "50Hz power-grid flicker compensation enabled by default."
+    },
+    "GB": {
+      "countryCode": "GB",
+      "countryName": "United Kingdom",
+      "region": "Europe",
+      "restrictedGestures": [],
+      "requirePalmarForVictory": true,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {},
+      "culturalNotes": "Dorsal V-sign (VICTORY with back of hand facing camera) is offensive and suppressed to UNKNOWN."
+    },
+    "IE": {
+      "countryCode": "IE",
+      "countryName": "Ireland",
+      "region": "Europe",
+      "restrictedGestures": [],
+      "requirePalmarForVictory": true,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {},
+      "culturalNotes": "Dorsal V-sign suppressed to UNKNOWN."
+    },
+    "AU": {
+      "countryCode": "AU",
+      "countryName": "Australia",
+      "region": "Oceania",
+      "restrictedGestures": [],
+      "requirePalmarForVictory": true,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {},
+      "culturalNotes": "Dorsal V-sign suppressed to UNKNOWN."
+    },
+    "NZ": {
+      "countryCode": "NZ",
+      "countryName": "New Zealand",
+      "region": "Oceania",
+      "restrictedGestures": [],
+      "requirePalmarForVictory": true,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {},
+      "culturalNotes": "Dorsal V-sign suppressed to UNKNOWN."
+    },
+    "IR": {
+      "countryCode": "IR",
+      "countryName": "Iran",
+      "region": "Middle East",
+      "restrictedGestures": ["THUMBS_UP"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {
+        "THUMBS_UP": "POINTING_UP"
+      },
+      "culturalNotes": "THUMBS_UP is a traditional insult (Bilakh); remapped to POINTING_UP."
+    },
+    "IQ": {
+      "countryCode": "IQ",
+      "countryName": "Iraq",
+      "region": "Middle East",
+      "restrictedGestures": ["THUMBS_UP"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {
+        "THUMBS_UP": "POINTING_UP"
+      },
+      "culturalNotes": "THUMBS_UP restricted and remapped to POINTING_UP."
+    },
+    "AF": {
+      "countryCode": "AF",
+      "countryName": "Afghanistan",
+      "region": "South/Central Asia",
+      "restrictedGestures": ["THUMBS_UP"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {
+        "THUMBS_UP": "POINTING_UP"
+      },
+      "culturalNotes": "THUMBS_UP restricted and remapped to POINTING_UP."
+    },
+    "NG": {
+      "countryCode": "NG",
+      "countryName": "Nigeria",
+      "region": "West Africa",
+      "restrictedGestures": ["THUMBS_UP"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {
+        "THUMBS_UP": "POINTING_UP"
+      },
+      "culturalNotes": "THUMBS_UP restricted and remapped to POINTING_UP."
+    },
+    "GR": {
+      "countryCode": "GR",
+      "countryName": "Greece",
+      "region": "Europe",
+      "restrictedGestures": ["THUMBS_UP", "OPEN_PALM"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": true,
+      "remappedIntents": {
+        "THUMBS_UP": "POINTING_UP",
+        "OPEN_PALM": "FOUR_FINGERS"
+      },
+      "culturalNotes": "THUMBS_UP and static palmar OPEN_PALM (Moutza) restricted and remapped to POINTING_UP and FOUR_FINGERS."
+    },
+    "BR": {
+      "countryCode": "BR",
+      "countryName": "Brazil",
+      "region": "Latin America",
+      "restrictedGestures": ["PINCH"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {
+        "PINCH": "THREE_FINGERS"
+      },
+      "culturalNotes": "PINCH (OK ring gesture) is vulgar in Brazil; remapped to THREE_FINGERS."
+    },
+    "DE": {
+      "countryCode": "DE",
+      "countryName": "Germany",
+      "region": "Europe",
+      "restrictedGestures": ["PINCH"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {
+        "PINCH": "THREE_FINGERS"
+      },
+      "culturalNotes": "PINCH (OK sign) can carry offensive connotation; remapped to THREE_FINGERS."
+    },
+    "TR": {
+      "countryCode": "TR",
+      "countryName": "Turkey",
+      "region": "Europe / Middle East",
+      "restrictedGestures": ["PINCH"],
+      "requirePalmarForVictory": false,
+      "avoidPalmarOpenPalmMoutza": false,
+      "remappedIntents": {
+        "PINCH": "THREE_FINGERS"
+      },
+      "culturalNotes": "PINCH (OK sign) restricted and remapped to THREE_FINGERS."
+    }
+  }
+}
