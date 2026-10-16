@@ -13,6 +13,7 @@ import {
   classifyHandGesture,
   generateSyntheticGestureLandmarks,
   generateObjectGraspLandmarks,
+  REAL_WORLD_FAILURE_CASES,
   setAdminTrainedModel,
   getAdminTrainedModel,
 } from "../src/lib/hand-gesture-engine";
@@ -683,6 +684,70 @@ const sceneAnalyzer = new SceneAnalyzer();
     "3.5 Optimal Lighting (Checkerboard): Zero unnecessary preprocessing (gain=1, gamma=1.0, CLAHE off)",
     Boolean(checkOk),
     `contrast=${sCheck.contrast.toFixed(2)}, snrDb=${sCheck.snrDb} dB, cond=${sCheck.lightingCondition}`
+  );
+}
+
+// ================================================================================
+// BATTERY 4: REAL-WORLD LIVE WEBCAM FAILURE SCREENSHOTS (CASES 1, 2 & 3)
+// ================================================================================
+console.log("\n--- Battery 4: Real-World Live Camera Screenshot Failure Cases (n=120 frames) ---");
+{
+  let case1FPs = 0;
+  let case2FalseBlocks = 0;
+  let case3FPs = 0;
+
+  for (let f = 0; f < 40; f++) {
+    const jx = Math.sin(2 * Math.PI * 5.4 * (f / 30)) * 0.008;
+    const jy = Math.cos(2 * Math.PI * 5.4 * (f / 30)) * 0.008;
+
+    const lm1 = REAL_WORLD_FAILURE_CASES.CASE_1_PHONE_IN_HAND.map((p) => ({
+      x: p.x + jx,
+      y: p.y + jy,
+    }));
+    const r1 = classifyHandGesture(lm1, null);
+    if (
+      r1.gesture !== "UNKNOWN" ||
+      r1.objectGraspAnalysis?.reason !== "WIDE_PHONE_OR_OBJECT_CLASP"
+    ) {
+      case1FPs++;
+    }
+
+    const lm2 = REAL_WORLD_FAILURE_CASES.CASE_2_FREE_HAND_SIDE_PROFILE.map((p) => ({
+      x: p.x + jx,
+      y: p.y + jy,
+    }));
+    const r2 = classifyHandGesture(lm2, null);
+    if (r2.objectGraspAnalysis?.isObjectGrasp || r2.gesture !== "OPEN_PALM") {
+      case2FalseBlocks++;
+    }
+
+    const lm3 = REAL_WORLD_FAILURE_CASES.CASE_3_NOSE_TINGLING_SCRATCH.map((p) => ({
+      x: p.x + jx,
+      y: p.y + jy,
+    }));
+    const r3 = classifyHandGesture(lm3, null);
+    if (
+      r3.gesture !== "UNKNOWN" ||
+      r3.objectGraspAnalysis?.reason !== "CASUAL_FACE_TOUCH_OR_SCRATCH"
+    ) {
+      case3FPs++;
+    }
+  }
+
+  assertTest(
+    "4.1 Failure Case 1 (Smartphone in Hand w/ Index Extended, n=40): 0.0% FP (WIDE_PHONE_OR_OBJECT_CLASP)",
+    case1FPs === 0,
+    `FP=${case1FPs}/40`
+  );
+  assertTest(
+    "4.2 Failure Case 2 (Side-Profile Free Hand, n=40): 0.0% False Occlusion Blocks (OPEN_PALM)",
+    case2FalseBlocks === 0,
+    `FalseBlocks=${case2FalseBlocks}/40`
+  );
+  assertTest(
+    "4.3 Failure Case 3 (Nose Tingling / Face Scratch, n=40): 0.0% FP (CASUAL_FACE_TOUCH_OR_SCRATCH)",
+    case3FPs === 0,
+    `FP=${case3FPs}/40`
   );
 }
 

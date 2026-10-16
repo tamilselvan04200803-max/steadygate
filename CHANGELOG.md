@@ -4,6 +4,21 @@ All notable changes to the SteadyGate 1.0 to 2.0 upgrade are documented in this 
 
 ---
 
+## [2.0.0-Alpha.3] - 2026-10-16
+### Added & Fixed
+- **Guard 6 (`WIDE_PHONE_OR_OBJECT_CLASP` in `src/lib/hand-gesture-engine.ts`)**: Resolved Failure Case 1 (`Screenshot 2026-10-16 114707.png` — holding a smartphone with index extended along top edge misclassified as `POINTING_UP`) by blocking wide opposing thumb-to-knuckle spans (`d4_5 > 0.72 && d4_10 > 1.10 && d4_14 > 1.10 && Math.max(mid, rng, pnk) < 0.45`).
+- **Side-Profile Free-Hand Exemption (`src/lib/hand-gesture-engine.ts`)**: Resolved Failure Case 2 (`Screenshot 2026-10-16 114648.png` — empty side-profile hand falsely blocked as `PALM_OCCLUDED_BY_OBJECT`) by exempting natural 3D side-profile hands (`aspect > 3.6 && aspect <= 6.2 && palmLen >= 0.22 && fourMin >= 0.70 && Math.abs(landmarks[9].x - wrist.x) / palmLen >= 0.28`) so they classify cleanly as `OPEN_PALM`.
+- **Guard 7 (`CASUAL_FACE_TOUCH_OR_SCRATCH`) + Face/Nose ROI Overlap Guard (`src/lib/hand-gesture-engine.ts`, `src/lib/vision-runtime.ts`, `src/components/LiveCameraStream.tsx`)**: Resolved Failure Case 3 (`Screenshot 2026-10-16 121013.png` — nose tingling / face scratching misclassified as `FIST`) via dual biomechanical dorsal/scratch rejection (`Math.min(mIdx, mMid) < 45 && Math.max(sIdx, sMid) > 0.65 && fourMean < 0.35`) and live upper-central Face/Nose ROI skin-cluster overlap detection.
+
+---
+
+## [2.0.0-Alpha.2] - 2026-10-16
+### Added
+- Created `TEAM_WORK.md` incorporating enterprise software development lifecycle specifications across the 4-role virtual team (`[Lead Architect]`, `[Implementation Eng]`, `[QA & Chaos Eng]`, `[Principal Reviewer]`).
+- Updated `DECISIONS.md` (`[AD-2026-002]` & `[AD-2026-003]`) to establish corporate multi-agent workflows and live camera failure-case guards.
+
+---
+
 ## [2.0.0-unified-hub] - 2026-10-15
 ### Added & Fixed
 - **Unified Single-Origin Hub (`ADR-006`)**: Integrated the interactive Smart-House Digital Twin directly into the main Next.js application (`port 3000`) and stopped the disconnected standalone port `8765` preview so gesture recognition, appliance state, and simulation run on a single unified origin.

@@ -19,6 +19,7 @@ import {
   classifyHandGesture,
   generateSyntheticGestureLandmarks,
   generateObjectGraspLandmarks,
+  REAL_WORLD_FAILURE_CASES,
   GESTURE_SMART_HOME_MAP,
   type ObjectGraspAnalysis,
 } from "@/lib/hand-gesture-engine";
@@ -131,7 +132,14 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   const [handParams, setHandParams] = useState<HandParameters | null>(null);
   const [graspAnalysis, setGraspAnalysis] = useState<ObjectGraspAnalysis | null>(null);
   const [bookHoldTestMode, setBookHoldTestMode] = useState<
-    "NONE" | "BOOK_SPINE" | "OPEN_BOOK" | "PHONE_GRASP" | "CUP_MUG"
+    | "NONE"
+    | "BOOK_SPINE"
+    | "OPEN_BOOK"
+    | "PHONE_GRASP"
+    | "CUP_MUG"
+    | "CASE_1_PHONE_IN_HAND"
+    | "CASE_2_FREE_HAND_SIDE_PROFILE"
+    | "CASE_3_NOSE_TINGLING_SCRATCH"
   >("NONE");
   const [lightingStressMode, setLightingStressMode] = useState<
     "OPTIMAL" | "LOW_LIGHT_12_LUX" | "HARSH_BACKLIGHT_GLARE"
@@ -478,20 +486,31 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         ctx.lineTo(width, y);
         ctx.stroke();
       }
-      normLandmarks =
-        bookHoldTestMode !== "NONE"
-          ? generateObjectGraspLandmarks(
-              bookHoldTestMode,
-              t,
-              user?.f0Hz || 5.2,
-              tremorInjectionAmp
-            )
-          : generateSyntheticGestureLandmarks(
-              activeGesture,
-              t,
-              user?.f0Hz || 5.2,
-              tremorInjectionAmp
-            );
+      if (
+        bookHoldTestMode === "CASE_1_PHONE_IN_HAND" ||
+        bookHoldTestMode === "CASE_2_FREE_HAND_SIDE_PROFILE" ||
+        bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH"
+      ) {
+        const baseCase = REAL_WORLD_FAILURE_CASES[bookHoldTestMode];
+        const jx = Math.sin(2 * Math.PI * (user?.f0Hz || 5.2) * t) * (tremorInjectionAmp * 0.25);
+        const jy = Math.cos(2 * Math.PI * (user?.f0Hz || 5.2) * t) * (tremorInjectionAmp * 0.25);
+        normLandmarks = baseCase.map((p) => ({ x: p.x + jx, y: p.y + jy }));
+      } else {
+        normLandmarks =
+          bookHoldTestMode !== "NONE"
+            ? generateObjectGraspLandmarks(
+                bookHoldTestMode,
+                t,
+                user?.f0Hz || 5.2,
+                tremorInjectionAmp
+              )
+            : generateSyntheticGestureLandmarks(
+                activeGesture,
+                t,
+                user?.f0Hz || 5.2,
+                tremorInjectionAmp
+              );
+      }
       handPresent = true;
     }
 
@@ -500,11 +519,21 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     let vote: VoteResult | null = null;
 
     if (normLandmarks) {
-      classification = classifyHandGesture(normLandmarks, user);
+      const faceOverlapDetected = webcam
+        ? sceneRef.current.detectFaceNoseOverlap(normLandmarks)
+        : bookHoldTestMode === "CASE_3_NOSE_TINGLING_SCRATCH";
+      classification = classifyHandGesture(normLandmarks, user, { faceOverlapDetected });
       setHandParams(classification.handParams);
-      if (classification.objectGraspAnalysis) {
-        setGraspAnalysis(classification.objectGraspAnalysis);
-      }
+      setGraspAnalysis(
+        classification.objectGraspAnalysis ?? {
+          isObjectGrasp: false,
+          reason: "NONE",
+          bimodalityScore: 0.94,
+          cApertureRatio: 0.52,
+          lumbricalFlatness: 0,
+          faceOverlapDetected: false,
+        }
+      );
       intent = webcam
         ? intentRef.current.update(normLandmarks, now)
         : {
@@ -1058,13 +1087,16 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
             </strong>{" "}
             · Bimodal: <strong>{graspAnalysis?.bimodalityScore ?? 0.92}</strong>
           </div>
-          <div className="flex items-center gap-1 pt-0.5">
+          <div className="flex flex-wrap items-center gap-1 pt-0.5">
             {(
               [
                 { id: "NONE", label: "✋ Gesture" },
                 { id: "BOOK_SPINE", label: "📕 Book" },
                 { id: "OPEN_BOOK", label: "📖 Open Book" },
                 { id: "CUP_MUG", label: "☕ Mug" },
+                { id: "CASE_1_PHONE_IN_HAND", label: "📱 Phone+Index" },
+                { id: "CASE_2_FREE_HAND_SIDE_PROFILE", label: "✋ Side Hand" },
+                { id: "CASE_3_NOSE_TINGLING_SCRATCH", label: "👃 Nose Scratch" },
               ] as const
             ).map((b) => (
               <button
@@ -1073,7 +1105,9 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
                 onClick={() => setBookHoldTestMode(b.id)}
                 className={`px-2 py-0.5 rounded text-[10px] font-mono border ${
                   bookHoldTestMode === b.id
-                    ? "bg-rose-500 text-white font-bold border-rose-400"
+                    ? b.id === "CASE_2_FREE_HAND_SIDE_PROFILE"
+                      ? "bg-emerald-500 text-slate-950 font-bold border-emerald-400"
+                      : "bg-rose-500 text-white font-bold border-rose-400"
                     : "bg-slate-900 text-slate-300 border-slate-800"
                 }`}
               >

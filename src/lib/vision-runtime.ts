@@ -260,6 +260,7 @@ export class SceneAnalyzer {
   private sctx: CanvasRenderingContext2D | null = null;
   private work: HTMLCanvasElement | null = null;
   private wctx: CanvasRenderingContext2D | null = null;
+  private lastRgba: Uint8ClampedArray | null = null;
   private last: SceneStats = {
     luminance: 0.52,
     contrast: 0.22,
@@ -278,6 +279,56 @@ export class SceneAnalyzer {
     return this.last;
   }
 
+  /**
+   * Detects whether the hand is overlapping the user's face/nose region (Failure Case 3)
+   * by checking if the fingers hang downward from elevated MCP knuckles (`y_tip > y_mcp`)
+   * while situated directly below a skin-tone + forehead/hair ROI in the 64x48 frame.
+   */
+  detectFaceNoseOverlap(landmarks: HandLandmark2D[]): boolean {
+    if (!landmarks || landmarks.length < 21) return false;
+    const wrist = landmarks[0];
+    const palmLen = Math.max(Math.hypot(wrist.x - landmarks[9].x, wrist.y - landmarks[9].y), 1e-5);
+
+    // Check if index and middle fingers hang downward below their MCP knuckles (dorsal/claw scratch posture)
+    const fingersHangingDown =
+      landmarks[8].y > landmarks[5].y + 0.04 * palmLen &&
+      landmarks[12].y > landmarks[9].y + 0.04 * palmLen &&
+      landmarks[5].y < wrist.y - 0.45 * palmLen;
+
+    if (!fingersHangingDown) return false;
+
+    // If we have pixel data from the 64x48 camera buffer, verify skin-tone / face presence directly above the knuckles
+    if (this.lastRgba && this.lastRgba.length >= 64 * 48 * 4) {
+      const topKnuckleX = (landmarks[4].x + landmarks[5].x + landmarks[9].x) / 3;
+      const topKnuckleY = Math.min(landmarks[4].y, landmarks[5].y, landmarks[9].y);
+      const cx = Math.max(6, Math.min(57, Math.round(topKnuckleX * 64)));
+      const cy = Math.max(8, Math.min(42, Math.round(topKnuckleY * 48)));
+
+      let skinPixels = 0;
+      let totalSampled = 0;
+      for (let y = Math.max(2, cy - 8); y <= Math.min(46, cy + 2); y++) {
+        for (let x = Math.max(2, cx - 6); x <= Math.min(61, cx + 6); x++) {
+          const idx = (y * 64 + x) * 4;
+          const r = this.lastRgba[idx];
+          const g = this.lastRgba[idx + 1];
+          const b = this.lastRgba[idx + 2];
+          // Standard YCbCr skin-chrominance check
+          const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+          const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+          totalSampled += 1;
+          if (r > 60 && cr >= 132 && cr <= 178 && cb >= 75 && cb <= 132) {
+            skinPixels += 1;
+          }
+        }
+      }
+      if (totalSampled > 0 && skinPixels / totalSampled >= 0.25) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   /** Analyse every Nth frame on a 64x48 downsample with histogram percentiles & adaptive gamma/CLAHE. */
   analyse(video: HTMLVideoElement, every = 6): SceneStats {
     this.frame += 1;
@@ -292,6 +343,7 @@ export class SceneAnalyzer {
     if (!ctx) return this.last;
     ctx.drawImage(video, 0, 0, 64, 48);
     const { data } = ctx.getImageData(0, 0, 64, 48);
+    this.lastRgba = data;
     const n = 64 * 48;
     const lum = new Float32Array(n);
     let sum = 0;

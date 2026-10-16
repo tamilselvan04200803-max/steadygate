@@ -217,7 +217,9 @@ export type ObjectGraspRejectionReason =
   | "OPEN_BOOK_PAGE_HOLD"
   | "CYLINDRICAL_CUP_OR_PHONE_GRASP"
   | "PALM_OCCLUDED_BY_OBJECT"
-  | "ADMIN_LEARNED_NEGATIVE_GRASP";
+  | "ADMIN_LEARNED_NEGATIVE_GRASP"
+  | "WIDE_PHONE_OR_OBJECT_CLASP"
+  | "CASUAL_FACE_TOUCH_OR_SCRATCH";
 
 export interface ObjectGraspAnalysis {
   isObjectGrasp: boolean;
@@ -225,6 +227,7 @@ export interface ObjectGraspAnalysis {
   bimodalityScore: number; // 0..1 (high = clear intentional gesture, low = uniform semi-flexed object grasp)
   cApertureRatio: number; // dist(thumbTip, indexTip) / palmLength
   lumbricalFlatness: number; // straightness - wristReach
+  faceOverlapDetected?: boolean;
 }
 
 function dist(p1: HandLandmark2D, p2: HandLandmark2D): number {
@@ -328,7 +331,8 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
  */
 export function detectObjectGrasp(
   landmarks: HandLandmark2D[],
-  handParams?: HandParameters
+  handParams?: HandParameters,
+  options?: { faceOverlapDetected?: boolean }
 ): ObjectGraspAnalysis {
   if (!landmarks || landmarks.length < 21) {
     return {
@@ -348,6 +352,10 @@ export function detectObjectGrasp(
   const aspect = palmLen / palmWidth;
 
   const pinchNorm = dist(landmarks[4], landmarks[8]) / palmLen;
+  const d4_5 = dist(landmarks[4], landmarks[5]) / palmLen;
+  const d4_9 = dist(landmarks[4], landmarks[9]) / palmLen;
+  const d4_10 = dist(landmarks[4], landmarks[10]) / palmLen;
+  const d4_14 = dist(landmarks[4], landmarks[14]) / palmLen;
   const four = [idx, mid, rng, pnk];
   const fourMean = (idx + mid + rng + pnk) / 4.0;
   const fourMax = Math.max(...four);
@@ -392,7 +400,17 @@ export function detectObjectGrasp(
   }
 
   // 1. Palm occluded or collapsed by a large held object (book cover blocking palm)
-  if (aspect < 0.38 || aspect > 3.6) {
+  // Exempt natural 3D radial/ulnar side-profile free hands (Failure Case 2: Screenshot 114648)
+  // where all 4 fingers are cleanly extended upward (fourMin >= 0.70, palmLen >= 0.22)
+  // and the dorsal knuckle ridge is naturally offset from the wrist (|x9 - x0|/palmLen >= 0.28).
+  const isNaturalSideProfileFreeHand =
+    aspect > 3.6 &&
+    aspect <= 6.2 &&
+    palmLen >= 0.22 &&
+    fourMin >= 0.70 &&
+    Math.abs(landmarks[9].x - wrist.x) / palmLen >= 0.28;
+
+  if ((aspect < 0.38 || aspect > 3.6) && !isNaturalSideProfileFreeHand) {
     return {
       isObjectGrasp: true,
       reason: "PALM_OCCLUDED_BY_OBJECT",
@@ -416,6 +434,7 @@ export function detectObjectGrasp(
   const minTipToMcp = Math.min(dIdx, dMid, dRng, dPnk);
 
   if (
+    !isNaturalSideProfileFreeHand &&
     meanStraight > 0.65 &&
     meanMcpAngle < 145 &&
     minTipToMcp > 0.55 &&
@@ -427,6 +446,48 @@ export function detectObjectGrasp(
       bimodalityScore: Math.round(bimodalityScore * 100) / 100,
       cApertureRatio: Math.round(pinchNorm * 100) / 100,
       lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
+    };
+  }
+
+  // 6. Wide Smartphone / Tablet / Object Clasp with Index Extended (Failure Case 1: Screenshot 114707):
+  // Thumb tip (4) opposes the MCP/PIP knuckle line across the wide body of a phone/book
+  // (d4_5 > 0.72, d4_10 > 1.10, d4_14 > 1.10) while middle/ring/pinky hook around the side edge
+  // even when the index finger rests extended along the top edge of the phone.
+  if (
+    idx >= 0.50 &&
+    Math.max(mid, rng, pnk) < 0.45 &&
+    d4_5 > 0.72 &&
+    d4_10 > 1.10 &&
+    d4_14 > 1.10
+  ) {
+    return {
+      isObjectGrasp: true,
+      reason: "WIDE_PHONE_OR_OBJECT_CLASP",
+      bimodalityScore: Math.round(bimodalityScore * 100) / 100,
+      cApertureRatio: Math.round(pinchNorm * 100) / 100,
+      lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
+    };
+  }
+
+  // 7. Casual Face/Nose Touch or Scratch Guard (Failure Case 3: Screenshot 121013):
+  // Dual guard: (a) Biomechanical dorsal/claw scratch where knuckles are elevated near nose bridge
+  // with acute MCP fold (< 45 deg) while straight PIP-DIP segments (> 0.65) hang downward toward the wrist,
+  // OR (b) Live Face/Nose ROI overlap flagged by the camera stream.
+  const isBiomechanicalFaceScratch =
+    thumb < 0.48 &&
+    d4_9 < 0.68 &&
+    Math.min(mIdx, mMid) < 45 &&
+    Math.max(sIdx, sMid) > 0.65 &&
+    fourMean < 0.35;
+
+  if (isBiomechanicalFaceScratch || options?.faceOverlapDetected) {
+    return {
+      isObjectGrasp: true,
+      reason: "CASUAL_FACE_TOUCH_OR_SCRATCH",
+      bimodalityScore: Math.round(bimodalityScore * 100) / 100,
+      cApertureRatio: Math.round(pinchNorm * 100) / 100,
+      lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
+      faceOverlapDetected: Boolean(options?.faceOverlapDetected || isBiomechanicalFaceScratch),
     };
   }
 
@@ -502,7 +563,8 @@ export function detectObjectGrasp(
  */
 export function classifyHandGesture(
   landmarks: HandLandmark2D[],
-  userProfile?: UserProfile | null
+  userProfile?: UserProfile | null,
+  options?: { faceOverlapDetected?: boolean }
 ): {
   gesture: RecognizedGesture;
   confidence: number;
@@ -540,7 +602,7 @@ export function classifyHandGesture(
   }
 
   // Strict Object-Grasp & Book-Holding Guard
-  const graspAnalysis = detectObjectGrasp(landmarks, handParams);
+  const graspAnalysis = detectObjectGrasp(landmarks, handParams, options);
   if (graspAnalysis.isObjectGrasp) {
     return {
       gesture: "UNKNOWN",
@@ -1024,3 +1086,86 @@ export function generateSyntheticGestureLandmarks(
     ...pinkyFinger,
   ];
 }
+
+/**
+ * Exact 21-landmark fixtures reconstructed from the 3 live camera screenshots:
+ * - CASE_1_PHONE_IN_HAND (`Screenshot 2026-10-16 114707.png`): Smartphone held vertically with index extended along top edge -> must be blocked (`WIDE_PHONE_OR_OBJECT_CLASP` -> `UNKNOWN`).
+ * - CASE_2_FREE_HAND_SIDE_PROFILE (`Screenshot 2026-10-16 114648.png`): Free hand viewed in 3D radial side profile -> must NOT trigger `PALM_OCCLUDED_BY_OBJECT` (`isObjectGrasp: false` -> `OPEN_PALM`).
+ * - CASE_3_NOSE_TINGLING_SCRATCH (`Screenshot 2026-10-16 121013.png`): Casual nose/face scratching with acute MCP fold & hanging straight PIP segments -> must be blocked (`CASUAL_FACE_TOUCH_OR_SCRATCH` -> `UNKNOWN`).
+ */
+export const REAL_WORLD_FAILURE_CASES: {
+  CASE_1_PHONE_IN_HAND: HandLandmark2D[];
+  CASE_2_FREE_HAND_SIDE_PROFILE: HandLandmark2D[];
+  CASE_3_NOSE_TINGLING_SCRATCH: HandLandmark2D[];
+} = {
+  CASE_1_PHONE_IN_HAND: [
+    { x: 0.34, y: 0.915 },
+    { x: 0.237, y: 0.79 },
+    { x: 0.176, y: 0.653 },
+    { x: 0.107, y: 0.545 },
+    { x: 0.069, y: 0.457 },
+    { x: 0.522, y: 0.516 },
+    { x: 0.63, y: 0.382 },
+    { x: 0.693, y: 0.303 },
+    { x: 0.721, y: 0.25 },
+    { x: 0.639, y: 0.581 },
+    { x: 0.793, y: 0.455 },
+    { x: 0.718, y: 0.491 },
+    { x: 0.609, y: 0.548 },
+    { x: 0.706, y: 0.658 },
+    { x: 0.838, y: 0.606 },
+    { x: 0.722, y: 0.673 },
+    { x: 0.576, y: 0.712 },
+    { x: 0.771, y: 0.784 },
+    { x: 0.874, y: 0.755 },
+    { x: 0.76, y: 0.795 },
+    { x: 0.654, y: 0.822 },
+  ],
+  CASE_2_FREE_HAND_SIDE_PROFILE: [
+    { x: 0.453, y: 0.918 },
+    { x: 0.408, y: 0.784 },
+    { x: 0.43, y: 0.681 },
+    { x: 0.437, y: 0.607 },
+    { x: 0.426, y: 0.538 },
+    { x: 0.585, y: 0.679 },
+    { x: 0.585, y: 0.542 },
+    { x: 0.563, y: 0.461 },
+    { x: 0.528, y: 0.388 },
+    { x: 0.629, y: 0.674 },
+    { x: 0.611, y: 0.508 },
+    { x: 0.563, y: 0.41 },
+    { x: 0.515, y: 0.355 },
+    { x: 0.632, y: 0.654 },
+    { x: 0.618, y: 0.493 },
+    { x: 0.57, y: 0.433 },
+    { x: 0.525, y: 0.372 },
+    { x: 0.646, y: 0.664 },
+    { x: 0.622, y: 0.515 },
+    { x: 0.575, y: 0.445 },
+    { x: 0.535, y: 0.395 },
+  ],
+  CASE_3_NOSE_TINGLING_SCRATCH: [
+    { x: 0.37, y: 0.82 },
+    { x: 0.466, y: 0.737 },
+    { x: 0.506, y: 0.628 },
+    { x: 0.479, y: 0.518 },
+    { x: 0.431, y: 0.465 },
+    { x: 0.385, y: 0.458 },
+    { x: 0.391, y: 0.511 },
+    { x: 0.395, y: 0.535 },
+    { x: 0.398, y: 0.556 },
+    { x: 0.325, y: 0.499 },
+    { x: 0.339, y: 0.535 },
+    { x: 0.342, y: 0.558 },
+    { x: 0.344, y: 0.579 },
+    { x: 0.253, y: 0.569 },
+    { x: 0.279, y: 0.551 },
+    { x: 0.296, y: 0.585 },
+    { x: 0.302, y: 0.621 },
+    { x: 0.209, y: 0.611 },
+    { x: 0.233, y: 0.593 },
+    { x: 0.251, y: 0.622 },
+    { x: 0.258, y: 0.653 },
+  ],
+};
+

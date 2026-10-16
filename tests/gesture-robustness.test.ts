@@ -10,6 +10,7 @@ import {
   classifyHandGesture,
   generateSyntheticGestureLandmarks,
   generateObjectGraspLandmarks,
+  REAL_WORLD_FAILURE_CASES,
   setAdminTrainedModel,
   getAdminTrainedModel,
 } from "../src/lib/hand-gesture-engine";
@@ -390,6 +391,51 @@ console.log("\n== Check 21: Progressive 3-Stage Tremor f0 Personalizer & Irregul
   check(
     "Irregular >12Hz burst rejected & f0 preserved",
     afterIrregular.irregularFrequencyRejected && afterIrregular.activeF0Hz === lockedF0Before
+  );
+}
+
+console.log("\n== Check 22: Three Real-World Live Camera Screenshot Failure Cases ==");
+{
+  // Case 1 (Screenshot 114707.png): Smartphone held vertically in hand with index extended along top edge
+  const resCase1 = classifyHandGesture(REAL_WORLD_FAILURE_CASES.CASE_1_PHONE_IN_HAND, null);
+  console.log(
+    `  ✓ Case 1 (Phone in Hand w/ Index Extended): gesture=${resCase1.gesture}, blocked=${resCase1.objectGraspAnalysis?.isObjectGrasp}, reason=${resCase1.objectGraspAnalysis?.reason}`
+  );
+  check(
+    "Case 1: Phone in hand blocked as WIDE_PHONE_OR_OBJECT_CLASP",
+    resCase1.gesture === "UNKNOWN" &&
+      resCase1.objectGraspAnalysis?.isObjectGrasp === true &&
+      resCase1.objectGraspAnalysis?.reason === "WIDE_PHONE_OR_OBJECT_CLASP",
+    `${resCase1.gesture} / ${resCase1.objectGraspAnalysis?.reason}`
+  );
+
+  // Case 2 (Screenshot 114648.png): Empty Free Hand in 3D Side Profile
+  const resCase2 = classifyHandGesture(REAL_WORLD_FAILURE_CASES.CASE_2_FREE_HAND_SIDE_PROFILE, null);
+  console.log(
+    `  ✓ Case 2 (Free Hand Side Profile): gesture=${resCase2.gesture}, conf=${resCase2.confidence}, blocked=${Boolean(resCase2.objectGraspAnalysis?.isObjectGrasp)}`
+  );
+  check(
+    "Case 2: Free hand side profile NOT blocked as PALM_OCCLUDED_BY_OBJECT",
+    !resCase2.objectGraspAnalysis?.isObjectGrasp && resCase2.gesture === "OPEN_PALM",
+    `${resCase2.gesture} / blocked=${resCase2.objectGraspAnalysis?.isObjectGrasp}`
+  );
+
+  // Case 3 (Screenshot 121013.png): Nose Tingling / Face Scratching (Biomechanical + Face ROI Guard)
+  const resCase3Bio = classifyHandGesture(REAL_WORLD_FAILURE_CASES.CASE_3_NOSE_TINGLING_SCRATCH, null);
+  const resCase3Face = classifyHandGesture(REAL_WORLD_FAILURE_CASES.CASE_3_NOSE_TINGLING_SCRATCH, null, {
+    faceOverlapDetected: true,
+  });
+  console.log(
+    `  ✓ Case 3 (Nose Tingling / Face Scratch): gesture=${resCase3Bio.gesture}, blocked=${resCase3Bio.objectGraspAnalysis?.isObjectGrasp}, reason=${resCase3Bio.objectGraspAnalysis?.reason}`
+  );
+  check(
+    "Case 3: Nose tingling / face scratching blocked as CASUAL_FACE_TOUCH_OR_SCRATCH",
+    resCase3Bio.gesture === "UNKNOWN" &&
+      resCase3Bio.objectGraspAnalysis?.isObjectGrasp === true &&
+      resCase3Bio.objectGraspAnalysis?.reason === "CASUAL_FACE_TOUCH_OR_SCRATCH" &&
+      resCase3Face.gesture === "UNKNOWN" &&
+      resCase3Face.objectGraspAnalysis?.faceOverlapDetected === true,
+    `${resCase3Bio.gesture} / ${resCase3Bio.objectGraspAnalysis?.reason}`
   );
 }
 
