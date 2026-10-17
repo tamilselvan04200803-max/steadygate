@@ -53,7 +53,7 @@ const STEPS: VerificationStep[] = [
   {
     id: "STEP_7_PYTEST",
     label: "Python Digital Twin, Flight Recorder & Chaos Suite (26 tests)",
-    command: "python3 -m pytest -v",
+    command: process.platform === "win32" ? "py -m pytest -v" : "python3 -m pytest -v",
   },
 ];
 
