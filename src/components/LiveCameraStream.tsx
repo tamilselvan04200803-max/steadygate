@@ -32,6 +32,8 @@ import {
   loadHandLandmarker,
   installMediaPipeConsoleGuard,
   withMediaPipeConsoleSuppressedSync,
+  configureHardwareOpticalConstraints,
+  restoreContinuousExposure,
   SceneAnalyzer,
   LandmarkSmoother,
   GestureVoter,
@@ -395,7 +397,10 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
 
     // Clean up any stale streams before requesting a new one
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current.getTracks().forEach((t) => {
+        restoreContinuousExposure(t).catch(() => {});
+        t.stop();
+      });
       streamRef.current = null;
     }
 
@@ -406,6 +411,10 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         audio: false,
       });
       streamRef.current = stream;
+      const primaryTrack = stream.getVideoTracks()[0];
+      if (primaryTrack) {
+        await configureHardwareOpticalConstraints(primaryTrack).catch(() => {});
+      }
       const v = videoRef.current;
       if (!v) throw new Error("video element missing");
 

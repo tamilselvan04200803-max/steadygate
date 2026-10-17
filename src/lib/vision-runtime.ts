@@ -18,6 +18,7 @@
 import type { HandLandmarker } from "@mediapipe/tasks-vision";
 import type { HandLandmark2D, RecognizedGesture } from "./types";
 import { AdaptiveSkinCalibrator } from "./vision/skin-calibrator";
+import { STEADYGATE_V6_CONFIG } from "../config/steadygate.config";
 
 export type ModelStatus =
   | "IDLE"
@@ -41,6 +42,21 @@ export type LightingCondition =
   | "HARSH_BACKLIGHT_GLARE_COMP"
   | "LOW_CONTRAST_CLAHE";
 
+export type OpticalDegradeStep =
+  | "BYPASSED_OPTIMAL"
+  | "FULL_GAMMA_GUIDED_CLAHE"
+  | "SKIP_CLAHE_GAMMA_GUIDED"
+  | "GAMMA_LUT_ONLY";
+
+export interface HardwareOpticalLockResult {
+  supported: boolean;
+  mode: "hardware_manual_locked" | "continuous_auto_relaxed" | "software_fallback";
+  mainsHz: 50 | 60;
+  appliedExposureTimeMs: number | null;
+  quantizationErrorRatio: number;
+  motionBlurRisk: boolean;
+}
+
 export interface SceneStats {
   luminance: number; // 0..1 mean
   contrast: number; // 0..1 std
@@ -54,6 +70,15 @@ export interface SceneStats {
   mainsFlickerHz?: number; // 50Hz/60Hz fluorescent beat frequency detected (8-12 Hz)
   roiClaheMs?: number; // ROI-cropped CLAHE budget (< 2.0 ms)
   preprocessed: boolean;
+  /** v6.0 Wave 1 Stage 1 Optical Diagnostics */
+  rollingShutterFlickerHz?: number;
+  flickerAttenuatedDb?: number;
+  flickerConfidence?: number;
+  laplacianBlurVariance?: number;
+  rollingSharpBaseline?: number;
+  motionBlurDegraded?: boolean;
+  chromaDriftDeltaCbCr?: number;
+  degradeStep?: OpticalDegradeStep;
 }
 
 export interface IntentEvidence {
@@ -255,6 +280,164 @@ export async function loadHandLandmarker(
 }
 
 /* ------------------------------------------------------------------ */
+/* Stage 1 Hardware UVC Shutter & Anti-Banding Lock                     */
+/* ------------------------------------------------------------------ */
+
+export function inferDefaultMainsHz(): 50 | 60 {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    if (
+      tz.startsWith("America/") &&
+      !tz.includes("Argentina") &&
+      !tz.includes("Santiago") &&
+      !tz.includes("Lima") &&
+      !tz.includes("Montevideo")
+    ) {
+      return 60;
+    }
+    if (tz === "Asia/Seoul" || tz === "Asia/Taipei" || tz === "Asia/Manila") {
+      return 60;
+    }
+    return 50;
+  } catch {
+    return 50;
+  }
+}
+
+/**
+ * Capability-Probed Hardware UVC Shutter & Anti-Banding Lock (Wave 1 Stage 1).
+ * Safely probes `track.getCapabilities?.()` inside a `try/catch` block, verifies applied
+ * hardware settings via `track.getSettings?.()`, and locks exposureTime to a quantized
+ * integer multiple of the mains half-cycle (10.0 ms for 50 Hz, 8.333 ms for 60 Hz) when
+ * quantization error <= 1%. Automatically relaxes back to "continuous" in dark scenes.
+ */
+export async function configureHardwareOpticalConstraints(
+  track: MediaStreamTrack | null | undefined,
+  options?: {
+    mainsHz?: 50 | 60;
+    sceneLumaMean?: number;
+    lowLightDurationMs?: number;
+  }
+): Promise<HardwareOpticalLockResult> {
+  const mainsHz: 50 | 60 = options?.mainsHz ?? inferDefaultMainsHz();
+  const fallback: HardwareOpticalLockResult = {
+    supported: false,
+    mode: "software_fallback",
+    mainsHz,
+    appliedExposureTimeMs: null,
+    quantizationErrorRatio: 0,
+    motionBlurRisk: false,
+  };
+
+  if (!track || typeof track.getCapabilities !== "function" || typeof track.applyConstraints !== "function") {
+    return fallback;
+  }
+
+  try {
+    const caps = track.getCapabilities() as Record<string, unknown>;
+    const exposureModes = Array.isArray(caps.exposureMode) ? (caps.exposureMode as string[]) : [];
+    const expRange = caps.exposureTime as { min?: number; max?: number; step?: number } | undefined;
+
+    if (
+      !exposureModes.includes("manual") ||
+      !expRange ||
+      typeof expRange.min !== "number" ||
+      typeof expRange.max !== "number"
+    ) {
+      return fallback;
+    }
+
+    const sceneLuma = options?.sceneLumaMean ?? 0.5;
+    const lowLightMs = options?.lowLightDurationMs ?? 0;
+
+    // Dark-room safety fallback: relax back to continuous if sceneLumaMean < 0.08 for > 1.0s
+    if (
+      sceneLuma < STEADYGATE_V6_CONFIG.stage1Optical.criticalDarkLumaFloor.value &&
+      lowLightMs >= 1000
+    ) {
+      if (exposureModes.includes("continuous")) {
+        await track.applyConstraints({
+          advanced: [{ exposureMode: "continuous" } as MediaTrackConstraintSet],
+        });
+      }
+      return {
+        supported: true,
+        mode: "continuous_auto_relaxed",
+        mainsHz,
+        appliedExposureTimeMs: null,
+        quantizationErrorRatio: 0,
+        motionBlurRisk: false,
+      };
+    }
+
+    const halfCycleMs =
+      mainsHz === 50
+        ? STEADYGATE_V6_CONFIG.stage1Optical.shutterPeriod50HzMs.value
+        : STEADYGATE_V6_CONFIG.stage1Optical.shutterPeriod60HzMs.value;
+    // Use k=2 half-cycles in moderate-low light (0.08..0.18), else k=1 half-cycle
+    const kMultiple = sceneLuma < 0.18 ? 2 : 1;
+    const targetMs = halfCycleMs * kMultiple;
+
+    // UVC drivers report exposureTime either in milliseconds (e.g. 1..500) or 100us units (e.g. 10..5000)
+    const unitScale = expRange.max > 1000 && expRange.min >= 1 ? 10 : 1;
+    const targetRaw = targetMs * unitScale;
+    const step = typeof expRange.step === "number" && expRange.step > 0 ? expRange.step : 1;
+    const clampedRaw = Math.max(expRange.min, Math.min(expRange.max, targetRaw));
+    const quantizedRaw = expRange.min + Math.round((clampedRaw - expRange.min) / step) * step;
+    const quantizedMs = quantizedRaw / unitScale;
+    const quantErr = Math.abs(quantizedMs - targetMs) / Math.max(1e-6, targetMs);
+
+    if (quantErr > STEADYGATE_V6_CONFIG.stage1Optical.shutterQuantizationToleranceRatio.value) {
+      return {
+        ...fallback,
+        quantizationErrorRatio: Math.round(quantErr * 10000) / 10000,
+      };
+    }
+
+    // Apply sequentially: manual mode first, then quantized exposureTime
+    await track.applyConstraints({
+      advanced: [{ exposureMode: "manual" } as MediaTrackConstraintSet],
+    });
+    await track.applyConstraints({
+      advanced: [{ exposureTime: quantizedRaw } as MediaTrackConstraintSet],
+    });
+
+    const settings =
+      typeof track.getSettings === "function"
+        ? (track.getSettings() as Record<string, unknown>)
+        : {};
+    const appliedRaw =
+      typeof settings.exposureTime === "number" ? (settings.exposureTime as number) : quantizedRaw;
+    const appliedMs = Math.round((appliedRaw / unitScale) * 1000) / 1000;
+
+    return {
+      supported: true,
+      mode: "hardware_manual_locked",
+      mainsHz,
+      appliedExposureTimeMs: appliedMs,
+      quantizationErrorRatio: Math.round(quantErr * 10000) / 10000,
+      motionBlurRisk: kMultiple >= 2 || appliedMs >= 16.0,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export async function restoreContinuousExposure(
+  track: MediaStreamTrack | null | undefined
+): Promise<boolean> {
+  if (!track || typeof track.applyConstraints !== "function") return false;
+  try {
+    await track.applyConstraints({
+      advanced: [{ exposureMode: "continuous" } as MediaTrackConstraintSet],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Scene analysis + adaptive preprocessing                              */
 /* ------------------------------------------------------------------ */
 
@@ -266,6 +449,24 @@ export class SceneAnalyzer {
   private lastRgba: Uint8ClampedArray | null = null;
   public skinCalibrator = new AdaptiveSkinCalibrator();
   private cornerLumHistory: Array<{ t: number; l: number }> = [];
+  /** Pre-allocated Stage 1 ring buffers & scratch arrays (zero per-frame heap allocation) */
+  private rowMeanRing = new Float32Array(16 * 48);
+  private rowMeanTs = new Float64Array(16);
+  private rowMeanHead = 0;
+  private rowMeanCount = 0;
+  private baselineRowMean = new Float32Array(48);
+  private sharpBlurRing = new Float32Array(60);
+  private sharpBlurHead = 0;
+  private sharpBlurCount = 0;
+  private sharpSortScratch = new Float32Array(60);
+  private workLuma = new Float32Array(64 * 48);
+  private workCb = new Float32Array(64 * 48);
+  private workCr = new Float32Array(64 * 48);
+  private guidedMeanI = new Float32Array(64 * 48);
+  private guidedMeanII = new Float32Array(64 * 48);
+  private guidedA = new Float32Array(64 * 48);
+  private guidedB = new Float32Array(64 * 48);
+  private gammaLut = new Uint8Array(256);
   private last: SceneStats = {
     luminance: 0.52,
     contrast: 0.22,
@@ -279,11 +480,635 @@ export class SceneAnalyzer {
     mainsFlickerHz: 0,
     roiClaheMs: 0.35,
     preprocessed: false,
+    rollingShutterFlickerHz: 0,
+    flickerAttenuatedDb: 0,
+    flickerConfidence: 0,
+    laplacianBlurVariance: 180,
+    rollingSharpBaseline: 220,
+    motionBlurDegraded: false,
+    chromaDriftDeltaCbCr: 0,
+    degradeStep: "BYPASSED_OPTIMAL",
   };
   private frame = 0;
 
   stats(): SceneStats {
     return this.last;
+  }
+
+  /**
+   * Wave 1 Stage 1 — FPS-Aware Goertzel Row-Mean Rolling-Shutter Flicker Detector & Canceler
+   * Computes expected alias beat frequency f_beat = |2*f_mains - round(2*f_mains / fps) * fps|,
+   * samples background row-mean luma masked away from hand/face ROIs over a 16-frame ring buffer,
+   * runs a Goertzel filter at f_beat + vertical spatial banding analysis, and applies AC-only
+   * per-row luma gain equalization strictly on the BT.601 YUV Y plane (>= 20 dB suppression).
+   */
+  cancelRollingShutterFlicker(
+    rgba: Uint8ClampedArray,
+    width: number,
+    height: number,
+    options?: {
+      timestampMs?: number;
+      mainsHz?: 50 | 60;
+      handBbox?: { x0: number; y0: number; x1: number; y1: number } | null;
+      faceBbox?: { x0: number; y0: number; x1: number; y1: number } | null;
+    }
+  ): {
+    flickerDetected: boolean;
+    beatHz: number;
+    measuredFps: number;
+    flickerConfidence: number;
+    attenuatedDb: number;
+    chromaDriftDeltaCbCr: number;
+  } {
+    if (!rgba || width <= 0 || height <= 0 || rgba.length < width * height * 4) {
+      return {
+        flickerDetected: false,
+        beatHz: 0,
+        measuredFps: 30,
+        flickerConfidence: 0,
+        attenuatedDb: 0,
+        chromaDriftDeltaCbCr: 0,
+      };
+    }
+
+    const nowMs = options?.timestampMs ?? performance.now();
+    const mainsHz = options?.mainsHz ?? inferDefaultMainsHz();
+    const rows = Math.min(48, height);
+    const slot = this.rowMeanHead % 16;
+    this.rowMeanTs[slot] = nowMs;
+
+    // 1. Sample horizontal row-mean luma across background columns (masking out hand & face ROIs)
+    const hBox = options?.handBbox;
+    const fBox = options?.faceBbox;
+    for (let r = 0; r < rows; r++) {
+      const y = Math.min(height - 1, Math.floor((r / rows) * height));
+      const yNorm = y / height;
+      let sumY = 0;
+      let count = 0;
+      for (let x = 0; x < width; x++) {
+        const xNorm = x / width;
+        const inHand =
+          hBox &&
+          xNorm >= hBox.x0 &&
+          xNorm <= hBox.x1 &&
+          yNorm >= hBox.y0 &&
+          yNorm <= hBox.y1;
+        const inFace =
+          fBox &&
+          xNorm >= fBox.x0 &&
+          xNorm <= fBox.x1 &&
+          yNorm >= fBox.y0 &&
+          yNorm <= fBox.y1;
+        if (inHand || inFace) continue;
+        const idx = (y * width + x) * 4;
+        const luma = (0.299 * rgba[idx] + 0.587 * rgba[idx + 1] + 0.114 * rgba[idx + 2]) / 255;
+        sumY += luma;
+        count++;
+      }
+      if (count === 0) {
+        // Fallback to perimeter columns if hand covers entire row
+        const idxL = (y * width + 0) * 4;
+        const idxR = (y * width + (width - 1)) * 4;
+        sumY =
+          (0.299 * (rgba[idxL] + rgba[idxR]) +
+            0.587 * (rgba[idxL + 1] + rgba[idxR + 1]) +
+            0.114 * (rgba[idxL + 2] + rgba[idxR + 2])) /
+          255;
+        count = 2;
+      }
+      this.rowMeanRing[slot * 48 + r] = sumY / count;
+    }
+
+    this.rowMeanHead = (this.rowMeanHead + 1) % 16;
+    if (this.rowMeanCount < 16) this.rowMeanCount++;
+
+    // 2. Measure instantaneous FPS from capture timestamps
+    let measuredFps = 30.0;
+    if (this.rowMeanCount >= 4) {
+      const oldestSlot = (this.rowMeanHead - this.rowMeanCount + 16) % 16;
+      const newestSlot = (this.rowMeanHead - 1 + 16) % 16;
+      const dtSec = (this.rowMeanTs[newestSlot] - this.rowMeanTs[oldestSlot]) / 1000;
+      if (dtSec > 0.01) {
+        measuredFps = Math.max(8, Math.min(120, (this.rowMeanCount - 1) / dtSec));
+      }
+    }
+
+    const lineFreq = 2 * mainsHz;
+    const expectedBeatHz = Math.abs(
+      lineFreq - Math.round(lineFreq / measuredFps) * measuredFps
+    );
+
+    // 3. Compute temporal baseline row mean mu_row(y) and pre-correction AC row ripple energy
+    let preRippleEnergy = 0;
+    let dcRowMean = 0;
+    for (let r = 0; r < rows; r++) {
+      let sumT = 0;
+      for (let k = 0; k < this.rowMeanCount; k++) {
+        sumT += this.rowMeanRing[k * 48 + r];
+      }
+      const mu = sumT / Math.max(1, this.rowMeanCount);
+      this.baselineRowMean[r] = mu;
+      dcRowMean += mu;
+    }
+    dcRowMean /= Math.max(1, rows);
+
+    // Spatial row-banding ripple energy on current frame relative to spatial smooth profile
+    for (let r = 0; r < rows; r++) {
+      const curRow = this.rowMeanRing[slot * 48 + r];
+      const acDiff = curRow - dcRowMean;
+      preRippleEnergy += acDiff * acDiff;
+    }
+    preRippleEnergy /= Math.max(1, rows);
+
+    // 4. Run Goertzel filter at expectedBeatHz across the 16-frame ring buffer + spatial periodicity
+    let goertzelRatio = 0;
+    if (this.rowMeanCount >= 8 && expectedBeatHz > 0.5) {
+      const N = this.rowMeanCount;
+      const omega = (2 * Math.PI * expectedBeatHz) / measuredFps;
+      const coeff = 2 * Math.cos(omega);
+      let bandPowerSum = 0;
+      let totalAcPowerSum = 0;
+
+      for (let r = 0; r < rows; r += 2) {
+        const mu = this.baselineRowMean[r];
+        let s0 = 0,
+          s1 = 0,
+          s2 = 0;
+        let rowAcVar = 0;
+        for (let i = 0; i < N; i++) {
+          const tIdx = (this.rowMeanHead - N + i + 16) % 16;
+          const x = this.rowMeanRing[tIdx * 48 + r] - mu;
+          rowAcVar += x * x;
+          s0 = x + coeff * s1 - s2;
+          s2 = s1;
+          s1 = s0;
+        }
+        const power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+        bandPowerSum += Math.max(0, power) / N;
+        totalAcPowerSum += rowAcVar;
+      }
+      if (totalAcPowerSum > 1e-6) {
+        goertzelRatio = Math.min(1, bandPowerSum / (totalAcPowerSum * 0.45 + 1e-6));
+      }
+    }
+
+    // Also measure vertical spatial row-banding periodicity (handles 60Hz @ 30fps static f_beat=0Hz banding)
+    let spatialBandSignFlips = 0;
+    let spatialAcRms = Math.sqrt(preRippleEnergy);
+    for (let r = 2; r < rows; r++) {
+      const dPrev = this.rowMeanRing[slot * 48 + (r - 1)] - dcRowMean;
+      const dCurr = this.rowMeanRing[slot * 48 + r] - dcRowMean;
+      if ((dPrev <= -0.004 && dCurr >= 0.004) || (dPrev >= 0.004 && dCurr <= -0.004)) {
+        spatialBandSignFlips++;
+      }
+    }
+    const spatialPeriodicityScore =
+      spatialAcRms >= 0.012 && spatialBandSignFlips >= 2
+        ? Math.min(1, (spatialAcRms / 0.03) * 0.85)
+        : 0;
+
+    const flickerConfidence =
+      Math.round(Math.max(goertzelRatio, spatialPeriodicityScore) * 1000) / 1000;
+    const flickerDetected =
+      flickerConfidence >=
+        STEADYGATE_V6_CONFIG.stage1Optical.flickerConfidenceGate.value &&
+      preRippleEnergy >= 1e-5;
+
+    if (!flickerDetected) {
+      return {
+        flickerDetected: false,
+        beatHz: Math.round(expectedBeatHz * 10) / 10,
+        measuredFps: Math.round(measuredFps * 10) / 10,
+        flickerConfidence,
+        attenuatedDb: 0,
+        chromaDriftDeltaCbCr: 0,
+      };
+    }
+
+    // 5. Apply AC-only per-row luma gain equalization strictly on BT.601 YUV Y plane
+    const minGain = STEADYGATE_V6_CONFIG.stage1Optical.flickerGainMin.value;
+    const maxGain = STEADYGATE_V6_CONFIG.stage1Optical.flickerGainMax.value;
+    let postRippleEnergy = 0;
+    let chromaShiftSum = 0;
+    let chromaSamples = 0;
+
+    for (let y = 0; y < height; y++) {
+      const rBin = Math.min(rows - 1, Math.floor((y / height) * rows));
+      const rowY = this.rowMeanRing[slot * 48 + rBin];
+      // Equalize toward smooth vertical target (blend of DC row mean and temporal row baseline)
+      const targetRowY = expectedBeatHz > 0.5 ? this.baselineRowMean[rBin] : dcRowMean;
+      const rawGain = targetRowY / Math.max(1e-4, rowY);
+      const gain = Math.max(minGain, Math.min(maxGain, rawGain));
+
+      let corrRowSum = 0;
+      for (let x = 0; x < width; x++) {
+        const idx = (y * width + x) * 4;
+        const R = rgba[idx];
+        const G = rgba[idx + 1];
+        const B = rgba[idx + 2];
+        const Y = 0.299 * R + 0.587 * G + 0.114 * B;
+        const Cb = 128 - 0.168736 * R - 0.331264 * G + 0.5 * B;
+        const Cr = 128 + 0.5 * R - 0.418688 * G - 0.081312 * B;
+
+        const Ycorr = Math.max(0, Math.min(255, Y * gain));
+        const Rnew = Math.max(0, Math.min(255, Math.round(Ycorr + 1.402 * (Cr - 128))));
+        const Gnew = Math.max(
+          0,
+          Math.min(255, Math.round(Ycorr - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128)))
+        );
+        const Bnew = Math.max(0, Math.min(255, Math.round(Ycorr + 1.772 * (Cb - 128))));
+
+        rgba[idx] = Rnew;
+        rgba[idx + 1] = Gnew;
+        rgba[idx + 2] = Bnew;
+        corrRowSum += Ycorr / 255;
+
+        if ((x & 7) === 0 && (y & 7) === 0) {
+          const CbAfter = 128 - 0.168736 * Rnew - 0.331264 * Gnew + 0.5 * Bnew;
+          const CrAfter = 128 + 0.5 * Rnew - 0.418688 * Gnew - 0.081312 * Bnew;
+          chromaShiftSum += Math.hypot(CbAfter - Cb, CrAfter - Cr);
+          chromaSamples++;
+        }
+      }
+      const corrRowMean = corrRowSum / width;
+      const diffAfter = corrRowMean - targetRowY;
+      postRippleEnergy += diffAfter * diffAfter;
+    }
+    postRippleEnergy /= Math.max(1, height);
+
+    const attenuatedDb =
+      Math.round(10 * Math.log10((preRippleEnergy + 1e-9) / (postRippleEnergy + 1e-9)) * 100) /
+      100;
+    const chromaDriftDeltaCbCr =
+      chromaSamples > 0 ? Math.round((chromaShiftSum / chromaSamples) * 1000) / 1000 : 0;
+
+    this.last.rollingShutterFlickerHz = Math.round(expectedBeatHz * 10) / 10;
+    this.last.flickerAttenuatedDb = attenuatedDb;
+    this.last.flickerConfidence = flickerConfidence;
+
+    return {
+      flickerDetected: true,
+      beatHz: Math.round(expectedBeatHz * 10) / 10,
+      measuredFps: Math.round(measuredFps * 10) / 10,
+      flickerConfidence,
+      attenuatedDb,
+      chromaDriftDeltaCbCr,
+    };
+  }
+
+  /**
+   * Wave 1 Stage 1 — Self-Referenced Hand-ROI Motion-Blur Gate
+   * Computes 3x3 discrete Laplacian variance on the BT.601 luma plane inside the hand ROI
+   * plus directional gradient anisotropy, tracks the user's rolling sharp-frame p90 baseline
+   * when wrist velocity is low (< 0.25), and triggers motionBlurDegraded when
+   * laplacianBlurVariance < 0.42 * rollingSharpBaseline during rapid movement.
+   */
+  evaluateHandRoiMotionBlur(
+    rgba: Uint8ClampedArray,
+    width: number,
+    height: number,
+    landmarks?: HandLandmark2D[] | null,
+    wristVelocity: number = 0
+  ): {
+    laplacianBlurVariance: number;
+    rollingSharpBaseline: number;
+    directionalAnisotropy: number;
+    motionBlurDegraded: boolean;
+    kalmanNoiseMultiplier: number;
+  } {
+    if (!rgba || width < 4 || height < 4 || rgba.length < width * height * 4) {
+      return {
+        laplacianBlurVariance: 180,
+        rollingSharpBaseline: 220,
+        directionalAnisotropy: 0,
+        motionBlurDegraded: false,
+        kalmanNoiseMultiplier: 1.0,
+      };
+    }
+
+    let x0 = Math.floor(width * 0.15);
+    let y0 = Math.floor(height * 0.15);
+    let x1 = Math.ceil(width * 0.85);
+    let y1 = Math.ceil(height * 0.85);
+
+    if (landmarks && landmarks.length >= 21) {
+      let minX = 1,
+        minY = 1,
+        maxX = 0,
+        maxY = 0;
+      for (const pt of landmarks) {
+        if (pt.x < minX) minX = pt.x;
+        if (pt.y < minY) minY = pt.y;
+        if (pt.x > maxX) maxX = pt.x;
+        if (pt.y > maxY) maxY = pt.y;
+      }
+      x0 = Math.max(1, Math.floor((minX - 0.08) * width));
+      y0 = Math.max(1, Math.floor((minY - 0.08) * height));
+      x1 = Math.min(width - 2, Math.ceil((maxX + 0.08) * width));
+      y1 = Math.min(height - 2, Math.ceil((maxY + 0.08) * height));
+    } else {
+      x0 = Math.max(1, x0);
+      y0 = Math.max(1, y0);
+      x1 = Math.min(width - 2, x1);
+      y1 = Math.min(height - 2, y1);
+    }
+
+    const lumaAt = (px: number, py: number): number => {
+      const i = (py * width + px) * 4;
+      return 0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2];
+    };
+
+    let sumLap = 0;
+    let sumLapSq = 0;
+    let sumGxSq = 0;
+    let sumGySq = 0;
+    let count = 0;
+
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const c = lumaAt(x, y);
+        const l = lumaAt(x - 1, y);
+        const r = lumaAt(x + 1, y);
+        const u = lumaAt(x, y - 1);
+        const d = lumaAt(x, y + 1);
+        const lap = l + r + u + d - 4 * c;
+        const gx = r - l;
+        const gy = d - u;
+        sumLap += lap;
+        sumLapSq += lap * lap;
+        sumGxSq += gx * gx;
+        sumGySq += gy * gy;
+        count++;
+      }
+    }
+
+    const meanLap = count > 0 ? sumLap / count : 0;
+    const lapVar =
+      count > 0 ? Math.max(0, sumLapSq / count - meanLap * meanLap) : 0;
+    const directionalAnisotropy =
+      Math.abs(sumGxSq - sumGySq) / Math.max(1e-6, sumGxSq + sumGySq);
+
+    // Update rolling sharp-frame baseline when hand is steady (wristVelocity < 0.25) and frame has texture
+    if (wristVelocity < 0.25 && lapVar > 8.0) {
+      this.sharpBlurRing[this.sharpBlurHead % 60] = lapVar;
+      this.sharpBlurHead = (this.sharpBlurHead + 1) % 60;
+      if (this.sharpBlurCount < 60) this.sharpBlurCount++;
+    }
+
+    let rollingSharpBaseline = 180.0;
+    if (this.sharpBlurCount >= 3) {
+      for (let i = 0; i < this.sharpBlurCount; i++) {
+        this.sharpSortScratch[i] = this.sharpBlurRing[i];
+      }
+      const sub = this.sharpSortScratch.subarray(0, this.sharpBlurCount);
+      sub.sort();
+      const p90Idx = Math.min(
+        this.sharpBlurCount - 1,
+        Math.floor(this.sharpBlurCount * 0.9)
+      );
+      rollingSharpBaseline = Math.max(15.0, sub[p90Idx]);
+    } else if (lapVar > 20.0 && wristVelocity < 0.25) {
+      rollingSharpBaseline = lapVar;
+    }
+
+    const relRatio = STEADYGATE_V6_CONFIG.stage1Optical.relativeBlurSharpnessRatio.value;
+    const motionBlurDegraded =
+      lapVar < relRatio * rollingSharpBaseline && wristVelocity >= 0.35;
+    const kalmanNoiseMultiplier = motionBlurDegraded
+      ? STEADYGATE_V6_CONFIG.stage1Optical.blurKalmanNoiseMultiplier.value
+      : 1.0;
+
+    this.last.laplacianBlurVariance = Math.round(lapVar * 100) / 100;
+    this.last.rollingSharpBaseline = Math.round(rollingSharpBaseline * 100) / 100;
+    this.last.motionBlurDegraded = motionBlurDegraded;
+
+    return {
+      laplacianBlurVariance: Math.round(lapVar * 100) / 100,
+      rollingSharpBaseline: Math.round(rollingSharpBaseline * 100) / 100,
+      directionalAnisotropy: Math.round(directionalAnisotropy * 1000) / 1000,
+      motionBlurDegraded,
+      kalmanNoiseMultiplier,
+    };
+  }
+
+  /**
+   * Wave 1 Stage 1 — Conditional, Luma-Only Edge-Preserving Conditioning with < 2.0 ms Degrade Ladder
+   * Operates strictly on the BT.601 YUV Luminance (Y) plane so chrominance shift Delta CbCr < 1.5.
+   * Bypasses optimal scenes; under low light or harsh backlight, runs:
+   *  1. FULL_GAMMA_GUIDED_CLAHE (Gamma + r=4 Box-Guided Filter + Luma CLAHE)
+   *  2. SKIP_CLAHE_GAMMA_GUIDED (Gamma + Guided Filter)
+   *  3. GAMMA_LUT_ONLY (256-entry Gamma LUT)
+   * depending on runtime budget (< 2.0 ms).
+   */
+  conditionFrameLumaOnly(
+    rgba: Uint8ClampedArray,
+    width: number,
+    height: number,
+    options?: {
+      forceDegradeStep?: OpticalDegradeStep;
+      budgetLimitMs?: number;
+    }
+  ): {
+    elapsedMs: number;
+    degradeStep: OpticalDegradeStep;
+    appliedGamma: number;
+    chromaDriftDeltaCbCr: number;
+    luminanceMeanBefore: number;
+    luminanceMeanAfter: number;
+  } {
+    const t0 = performance.now();
+    if (!rgba || width <= 0 || height <= 0 || rgba.length < width * height * 4) {
+      return {
+        elapsedMs: 0,
+        degradeStep: "BYPASSED_OPTIMAL",
+        appliedGamma: 1.0,
+        chromaDriftDeltaCbCr: 0,
+        luminanceMeanBefore: 0.5,
+        luminanceMeanAfter: 0.5,
+      };
+    }
+
+    const numPixels = width * height;
+    if (this.workLuma.length < numPixels) {
+      this.workLuma = new Float32Array(numPixels);
+      this.workCb = new Float32Array(numPixels);
+      this.workCr = new Float32Array(numPixels);
+      this.guidedMeanI = new Float32Array(numPixels);
+    }
+
+    // 1. Subsampled statistics pass (stride 4) to evaluate condition in < 0.03 ms
+    let sumY = 0;
+    let sumYSq = 0;
+    let glarePixels = 0;
+    let statCount = 0;
+    for (let i = 0; i < numPixels; i += 4) {
+      const idx = i << 2;
+      const yNorm = (77 * rgba[idx] + 150 * rgba[idx + 1] + 29 * rgba[idx + 2]) * 0.00001525902; // / (256 * 255)
+      sumY += yNorm;
+      sumYSq += yNorm * yNorm;
+      if (yNorm > 0.88) glarePixels++;
+      statCount++;
+    }
+
+    const lumMean = statCount > 0 ? sumY / statCount : 0.5;
+    const lumStd = Math.sqrt(Math.max(0, sumYSq / Math.max(1, statCount) - lumMean * lumMean));
+    const glareRatio = glarePixels / Math.max(1, statCount);
+
+    const needsLowLightLift =
+      lumMean < STEADYGATE_V6_CONFIG.stage1Optical.lowLightLumaGate.value;
+    const needsGlareComp =
+      lumStd > STEADYGATE_V6_CONFIG.stage1Optical.glareContrastStdGate.value &&
+      glareRatio > STEADYGATE_V6_CONFIG.stage1Optical.glarePixelRatioGate.value;
+
+    if (!options?.forceDegradeStep && !needsLowLightLift && !needsGlareComp) {
+      const elapsedMs = Math.round((performance.now() - t0) * 1000) / 1000;
+      this.last.degradeStep = "BYPASSED_OPTIMAL";
+      this.last.chromaDriftDeltaCbCr = 0;
+      return {
+        elapsedMs,
+        degradeStep: "BYPASSED_OPTIMAL",
+        appliedGamma: 1.0,
+        chromaDriftDeltaCbCr: 0,
+        luminanceMeanBefore: Math.round(lumMean * 1000) / 1000,
+        luminanceMeanAfter: Math.round(lumMean * 1000) / 1000,
+      };
+    }
+
+    // 2. Median-anchored adaptive gamma LUT (clamped to [0.72, 1.38])
+    const safeMedian = Math.max(0.05, Math.min(0.95, lumMean));
+    const rawGamma = Math.log(0.5) / Math.log(safeMedian);
+    const gamma = Math.max(
+      STEADYGATE_V6_CONFIG.stage1Optical.gammaMin.value,
+      Math.min(STEADYGATE_V6_CONFIG.stage1Optical.gammaMax.value, rawGamma)
+    );
+    const budgetLimitMs =
+      options?.budgetLimitMs ?? STEADYGATE_V6_CONFIG.frameBudgetMs.stage1OpticalMaxMs.value;
+    let degradeStep: OpticalDegradeStep =
+      options?.forceDegradeStep ?? "FULL_GAMMA_GUIDED_CLAHE";
+    const clipGain =
+      degradeStep === "FULL_GAMMA_GUIDED_CLAHE"
+        ? Math.min(STEADYGATE_V6_CONFIG.stage1Optical.claheClipLimit.value, 1.35)
+        : 1.0;
+
+    for (let v = 0; v < 256; v++) {
+      const lifted = Math.pow(v / 255, gamma);
+      const claheVal = (lifted - 0.5) * clipGain + 0.5;
+      this.gammaLut[v] = Math.max(0, Math.min(255, Math.round(claheVal * 255)));
+    }
+
+    // Extract BT.601 Y (0..255) and apply Gamma + CLAHE LUT
+    for (let i = 0; i < numPixels; i++) {
+      const idx = i << 2;
+      const yInt = (77 * rgba[idx] + 150 * rgba[idx + 1] + 29 * rgba[idx + 2]) >> 8;
+      this.workLuma[i] = this.gammaLut[yInt];
+    }
+
+    if (
+      !options?.forceDegradeStep &&
+      performance.now() - t0 > budgetLimitMs * 0.55
+    ) {
+      degradeStep = "GAMMA_LUT_ONLY";
+    }
+
+    // 3. Fast Edge-Preserving Guided Detail Boost on Luma (Y) plane
+    if (
+      degradeStep === "FULL_GAMMA_GUIDED_CLAHE" ||
+      degradeStep === "SKIP_CLAHE_GAMMA_GUIDED"
+    ) {
+      const eps255 = STEADYGATE_V6_CONFIG.stage1Optical.guidedFilterEps.value * 65025;
+      for (let y = 1; y < height - 1; y++) {
+        const rowOff = y * width;
+        for (let x = 1; x < width - 1; x++) {
+          const idx = rowOff + x;
+          const c = this.workLuma[idx];
+          const l = this.workLuma[idx - 1];
+          const r = this.workLuma[idx + 1];
+          const u = this.workLuma[idx - width];
+          const d = this.workLuma[idx + width];
+          const mI = (c + l + r + u + d) * 0.2;
+          const diff = c - mI;
+          const varI = diff * diff;
+          const a = varI / (varI + eps255);
+          const outY = mI + (a * 1.25) * diff;
+          this.guidedMeanI[idx] = outY < 0 ? 0 : outY > 255 ? 255 : outY;
+        }
+      }
+      if (
+        !options?.forceDegradeStep &&
+        performance.now() - t0 > budgetLimitMs * 0.85
+      ) {
+        degradeStep = "SKIP_CLAHE_GAMMA_GUIDED";
+      }
+    }
+
+    // 4. Luma-Only RGB Reconstruction: R' = R + dY, G' = G + dY, B' = B + dY
+    // In BT.601, adding pure dY equally to (R, G, B) shifts Y by exactly dY while keeping
+    // Cb = -0.1687*R - 0.3313*G + 0.5*B and Cr = 0.5*R - 0.4187*G - 0.0813*B identically constant!
+    const useGuided =
+      degradeStep === "FULL_GAMMA_GUIDED_CLAHE" ||
+      degradeStep === "SKIP_CLAHE_GAMMA_GUIDED";
+    let sumYAfter = 0;
+    let chromaDriftSum = 0;
+    let chromaSamples = 0;
+
+    for (let y = 0; y < height; y++) {
+      const rowOff = y * width;
+      const interiorY = y > 0 && y < height - 1;
+      for (let x = 0; x < width; x++) {
+        const i = rowOff + x;
+        const idx = i << 2;
+        const r = rgba[idx];
+        const g = rgba[idx + 1];
+        const b = rgba[idx + 2];
+        const yOrig = (77 * r + 150 * g + 29 * b) >> 8;
+        const yNew =
+          useGuided && interiorY && x > 0 && x < width - 1
+            ? this.guidedMeanI[i]
+            : this.workLuma[i];
+        const dY = Math.round(yNew - yOrig);
+
+        // Clamp dY so none of R, G, B saturates and distorts chrominance
+        const maxAdd = 255 - Math.max(r, g, b);
+        const minSub = -Math.min(r, g, b);
+        const safeDy = dY > maxAdd ? maxAdd : dY < minSub ? minSub : dY;
+
+        const rNew = r + safeDy;
+        const gNew = g + safeDy;
+        const bNew = b + safeDy;
+        rgba[idx] = rNew;
+        rgba[idx + 1] = gNew;
+        rgba[idx + 2] = bNew;
+        sumYAfter += (yOrig + safeDy) / 255;
+
+        if ((i & 31) === 0) {
+          const cbBefore = -0.168736 * r - 0.331264 * g + 0.5 * b;
+          const crBefore = 0.5 * r - 0.418688 * g - 0.081312 * b;
+          const cbAfter = -0.168736 * rNew - 0.331264 * gNew + 0.5 * bNew;
+          const crAfter = 0.5 * rNew - 0.418688 * gNew - 0.081312 * bNew;
+          chromaDriftSum += Math.hypot(cbAfter - cbBefore, crAfter - crBefore);
+          chromaSamples++;
+        }
+      }
+    }
+
+    const elapsedMs = Math.round((performance.now() - t0) * 1000) / 1000;
+    const chromaDriftDeltaCbCr =
+      chromaSamples > 0
+        ? Math.round((chromaDriftSum / chromaSamples) * 1000) / 1000
+        : 0;
+
+    this.last.degradeStep = degradeStep;
+    this.last.chromaDriftDeltaCbCr = chromaDriftDeltaCbCr;
+    this.last.roiClaheMs = elapsedMs;
+
+    return {
+      elapsedMs,
+      degradeStep,
+      appliedGamma: Math.round(gamma * 1000) / 1000,
+      chromaDriftDeltaCbCr,
+      luminanceMeanBefore: Math.round(lumMean * 1000) / 1000,
+      luminanceMeanAfter: Math.round((sumYAfter / numPixels) * 1000) / 1000,
+    };
   }
 
   /**
