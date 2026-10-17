@@ -68,6 +68,14 @@ export interface HandParameters {
   pinchEyeletSpread?: number;
   /** v5.0 True when dual-manifold teardrop pinch eyelet invariant is satisfied */
   isCanonicalPinchEyelet?: boolean;
+  /** v6.0 Stage 2: Coupled DIP/PIP Soft Kinematics & Metric Depth */
+  dipJointAnglesDeg?: [number, number, number, number];
+  dipPipUncouplingResidual?: number;
+  coupledKinematicLikelihood?: number;
+  dipPipUncouplingLlr?: number;
+  contractureExempted?: boolean;
+  selfOcclusionProb?: number;
+  metricDepthMetersApprox?: number;
 }
 
 export type GestureLabel = RecognizedGesture;

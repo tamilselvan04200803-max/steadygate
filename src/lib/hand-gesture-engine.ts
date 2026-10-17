@@ -21,6 +21,11 @@ import {
   computeNormalizedShape21,
   computeMirrorInvariantShapeDistance,
 } from "./generated-agent-patches";
+import {
+  evaluateCoupledDipPipBiomechanics,
+  computeSelfOcclusionProbability,
+  estimateMetricHandDepthMeters,
+} from "./biomechanics/coupled-ik-ckf";
 import type {
   CaregiverBiometricVerdict,
   LocaleGestureResolution,
@@ -542,6 +547,9 @@ export function extractHandParameters(
   const isCanonicalPinchEyelet = isTrefoilPinch || isPrecisionClosedPinch;
 
   const thumbIndexCAperture = Math.round(pinchTipDist * 1000) / 1000;
+  const coupledBio = evaluateCoupledDipPipBiomechanics(landmarks);
+  const selfOcc = computeSelfOcclusionProbability(landmarks);
+  const depthEst = estimateMetricHandDepthMeters(landmarks);
 
   return {
     palmWidth: Math.round(palmWidth * 1000) / 1000,
@@ -572,6 +580,13 @@ export function extractHandParameters(
     thumbTipToIndexMcpCrossDist: Math.round(thumbTipToIndexMcpCrossDist * 1000) / 1000,
     pinchEyeletSpread: Math.round(pinchEyeletSpread * 1000) / 1000,
     isCanonicalPinchEyelet,
+    dipJointAnglesDeg: coupledBio.dipFlexionDeg,
+    dipPipUncouplingResidual: coupledBio.dipPipUncouplingResidual,
+    coupledKinematicLikelihood: coupledBio.coupledKinematicLikelihood,
+    dipPipUncouplingLlr: coupledBio.llrUncouple,
+    contractureExempted: coupledBio.contractureExempted,
+    selfOcclusionProb: selfOcc.selfOcclusionProb,
+    metricDepthMetersApprox: depthEst.metricDepthMetersApprox,
   };
 }
 
