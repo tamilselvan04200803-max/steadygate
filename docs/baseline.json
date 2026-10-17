@@ -1,0 +1,19 @@
+{
+  "baselineCommit": "3ff9603",
+  "capturedAtIso": "2026-10-17T00:00:00.000Z",
+  "sampleSizeFrames": 1000,
+  "warmupFrames": 50,
+  "suites": {
+    "tsc": { "errors": 0, "status": "PASS" },
+    "gestureRobustness": { "passed": 26, "failed": 0, "hagridAccuracyPct": 100.0, "objectGraspFpCount": 0 },
+    "adversarialChallenger1": { "passed": 18, "failed": 0 },
+    "adversarialChallenger2": { "passed": 70, "failed": 0 },
+    "globalV4Adversarial": { "passed": 32, "failed": 0 },
+    "pytest": { "passed": 26, "failed": 0 }
+  },
+  "latencyMs": {
+    "stage1Optical": { "p50": 0.075, "p95": 0.123, "p99": 0.181, "budgetCeilingP95": 2.0 },
+    "stage2And3PerceptionGate": { "p50": 0.06, "p95": 0.102, "p99": 0.274, "budgetCeilingP95": 2.2 },
+    "stage4SignalFilter": { "p50": 0.061, "p95": 0.103, "p99": 0.304, "budgetCeilingP95": 0.85 }
+  }
+}
