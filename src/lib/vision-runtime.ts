@@ -825,6 +825,133 @@ export class SceneAnalyzer {
   }
 
   /**
+   * v5.0 Phase 3 — 16-Ray Radial Boundary-Crossing Object Scanner (`HandRoiObjectScanner`):
+   * Casts 16 radial rays across 360° from the grasp centroid, sampling inside the finger clamp
+   * (`0.45 * radius`), 25% outside the skeletal bounding box (`1.25 * radius`), and on the outer
+   * room perimeter (`1.75 * radius`). Detects continuous non-skin, non-background object mass
+   * protruding past the hand boundary, or confirms `bareHandConfirmed = true` when interior
+   * pixels match dorsal knuckle skin and zero object boundaries protrude.
+   */
+  scanHandBoundaryProtrusions(
+    landmarks: HandLandmark2D[],
+    rgbaBuffer?: Uint8ClampedArray
+  ): {
+    protrusionScore: number;
+    bareHandConfirmed: boolean;
+    protrudingRayCount: number;
+  } {
+    if (!landmarks || landmarks.length < 21) {
+      return { protrusionScore: 0, bareHandConfirmed: false, protrudingRayCount: 0 };
+    }
+    const activeRgba = rgbaBuffer || this.lastRgba;
+    if (!activeRgba || activeRgba.length < 64 * 48 * 4) {
+      return { protrusionScore: 0, bareHandConfirmed: false, protrudingRayCount: 0 };
+    }
+
+    let minX = 1,
+      maxX = 0,
+      minY = 1,
+      maxY = 0;
+    for (const p of landmarks) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+
+    const cx = (landmarks[0].x + landmarks[4].x + landmarks[8].x + landmarks[9].x) * 0.25;
+    const cy = (landmarks[0].y + landmarks[4].y + landmarks[8].y + landmarks[9].y) * 0.25;
+    const rx = Math.max(0.06, (maxX - minX) * 0.5);
+    const ry = Math.max(0.06, (maxY - minY) * 0.5);
+
+    // Sample dorsal knuckle ridge (0, 5, 9, 13, 17) as self-skin RGB reference
+    const knuckleIdx = [0, 5, 9, 13, 17];
+    let skinR = 0,
+      skinG = 0,
+      skinB = 0;
+    for (const idx of knuckleIdx) {
+      const sx = Math.max(1, Math.min(62, Math.round(landmarks[idx].x * 64)));
+      const sy = Math.max(1, Math.min(46, Math.round(landmarks[idx].y * 48)));
+      const p = (sy * 64 + sx) * 4;
+      skinR += activeRgba[p];
+      skinG += activeRgba[p + 1];
+      skinB += activeRgba[p + 2];
+    }
+    skinR /= knuckleIdx.length;
+    skinG /= knuckleIdx.length;
+    skinB /= knuckleIdx.length;
+
+    let protrudingRayCount = 0;
+    const numRays = 16;
+    for (let k = 0; k < numRays; k++) {
+      const theta = (2 * Math.PI * k) / numRays;
+      const cosT = Math.cos(theta);
+      const sinT = Math.sin(theta);
+
+      const inX = Math.max(2, Math.min(61, Math.round((cx + cosT * rx * 0.45) * 64)));
+      const inY = Math.max(2, Math.min(45, Math.round((cy + sinT * ry * 0.45) * 48)));
+      const outX = Math.max(2, Math.min(61, Math.round((cx + cosT * rx * 1.25) * 64)));
+      const outY = Math.max(2, Math.min(45, Math.round((cy + sinT * ry * 1.25) * 48)));
+      const bgX = Math.max(1, Math.min(62, Math.round((cx + cosT * rx * 1.75) * 64)));
+      const bgY = Math.max(1, Math.min(46, Math.round((cy + sinT * ry * 1.75) * 48)));
+
+      const pIn = (inY * 64 + inX) * 4;
+      const pOut = (outY * 64 + outX) * 4;
+      const pBg = (bgY * 64 + bgX) * 4;
+
+      const rIn = activeRgba[pIn],
+        gIn = activeRgba[pIn + 1],
+        bIn = activeRgba[pIn + 2];
+      const rOut = activeRgba[pOut],
+        gOut = activeRgba[pOut + 1],
+        bOut = activeRgba[pOut + 2];
+      const rBg = activeRgba[pBg],
+        gBg = activeRgba[pBg + 1],
+        bBg = activeRgba[pBg + 2];
+
+      const inIsSkin =
+        this.skinCalibrator.isUserSkinPixel(rIn, gIn, bIn) ||
+        Math.hypot(rIn - skinR, gIn - skinG, bIn - skinB) < 34.0;
+      const outIsSkin =
+        this.skinCalibrator.isUserSkinPixel(rOut, gOut, bOut) ||
+        Math.hypot(rOut - skinR, gOut - skinG, bOut - skinB) < 34.0;
+
+      const inOutContinuity = Math.hypot(rIn - rOut, gIn - gOut, bIn - bOut);
+      const outToBgDist = Math.hypot(rOut - rBg, gOut - gBg, bOut - bBg);
+
+      // Local Sobel edge at the 1.25x boundary point
+      const lIdx = (outY * 64 + (outX - 1)) * 4;
+      const rIdx = (outY * 64 + (outX + 1)) * 4;
+      const uIdx = ((outY - 1) * 64 + outX) * 4;
+      const dIdx = ((outY + 1) * 64 + outX) * 4;
+      const gx = activeRgba[rIdx] - activeRgba[lIdx];
+      const gy = activeRgba[dIdx] - activeRgba[uIdx];
+      const hasBoundaryEdge = Math.hypot(gx, gy) > 28.0;
+
+      if (
+        !inIsSkin &&
+        !outIsSkin &&
+        inOutContinuity < 42.0 &&
+        outToBgDist > 38.0 &&
+        hasBoundaryEdge
+      ) {
+        protrudingRayCount++;
+      }
+    }
+
+    const protrusionScore = Math.round(Math.min(1, protrudingRayCount / 6) * 100) / 100;
+    const skinDiv = this.computeKnuckleSkinDivergence(landmarks, activeRgba);
+    const occ = this.computeApertureObjectOccupancy(landmarks, activeRgba);
+    const bareHandConfirmed = skinDiv === 0 && occ < 0.25 && protrusionScore < 0.25;
+
+    return {
+      protrusionScore,
+      bareHandConfirmed,
+      protrudingRayCount,
+    };
+  }
+
+  /**
    * Ensemble B Signal B1 — Face, Mouth & Chin-Rest Exclusion Halo:
    * Detects both direct nose/face scratch AND Chin-Rest / Perioral Proximity
    * (e.g. resting the chin/jaw on a closed fist in the central upper-neck column).
@@ -1218,6 +1345,60 @@ export class IntentTracker {
       reasons,
       score: Math.max(0, Math.min(1, score)),
     };
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* v5.0 Phase 3: Temporal Object-Carry Memory Latch                    */
+/* ------------------------------------------------------------------ */
+
+export class ObjectCarryStateTracker {
+  private consecutiveObjectFrames = 0;
+  private latched = false;
+
+  reset(): void {
+    this.consecutiveObjectFrames = 0;
+    this.latched = false;
+  }
+
+  isLatched(): boolean {
+    return this.latched;
+  }
+
+  /**
+   * Updates the temporal object-carry latch.
+   * Latches `carryingObjectActive = true` when `ensembleScore >= 0.58` (or `confirmedObjectInHand`)
+   * for >= 3 consecutive frames. Releases only when the user opens their fingers (`fourMean >= 0.58`),
+   * confirms a bare-skin fist (`bareHandConfirmed && isCanonicalBareFist`), or confirms a bare pinch.
+   */
+  update(input: {
+    ensembleScore: number;
+    confirmedObjectInHand: boolean;
+    fourMean: number;
+    isCanonicalBareFist: boolean;
+    bareHandConfirmed: boolean;
+    isCanonicalPinchEyelet?: boolean;
+  }): boolean {
+    if (
+      input.fourMean >= 0.58 ||
+      (input.isCanonicalBareFist && input.bareHandConfirmed) ||
+      (input.isCanonicalPinchEyelet && input.bareHandConfirmed)
+    ) {
+      this.consecutiveObjectFrames = 0;
+      this.latched = false;
+      return false;
+    }
+
+    if (input.confirmedObjectInHand || input.ensembleScore >= 0.58) {
+      this.consecutiveObjectFrames += 1;
+      if (this.consecutiveObjectFrames >= 3) {
+        this.latched = true;
+      }
+    } else if (!this.latched) {
+      this.consecutiveObjectFrames = Math.max(0, this.consecutiveObjectFrames - 1);
+    }
+
+    return this.latched;
   }
 }
 

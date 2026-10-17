@@ -347,7 +347,10 @@ function angleAt(a: HandLandmark2D, b: HandLandmark2D, c: HandLandmark2D): numbe
  * Incorporates foreshortening-invariant tip-over-PIP ratio AND PIP/DIP joint straightness
  * normalization for the pinky (17-18-19-20) and palmar plane uncurled check for the thumb (1-2-3-4).
  */
-export function extractHandParameters(landmarks: HandLandmark2D[]): HandParameters {
+export function extractHandParameters(
+  landmarks: HandLandmark2D[],
+  worldLandmarks?: HandLandmark2D[]
+): HandParameters {
   if (!landmarks || landmarks.length < 21) {
     return {
       palmWidth: 0.2,
@@ -369,8 +372,36 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
       },
       normalHandSize: 0.25,
       handDistanceEstimate: 4.0,
+      thumbPalmarTuckRatio: -0.45,
+      pinchEyeletSpread: 0.42,
+      isCanonicalPinchEyelet: false,
     };
   }
+
+  const use3D = Boolean(
+    worldLandmarks &&
+      worldLandmarks.length >= 21 &&
+      typeof worldLandmarks[0]?.z === "number"
+  );
+  const angleAtJoint = (iA: number, iB: number, iC: number): number => {
+    if (use3D && worldLandmarks) {
+      const a = worldLandmarks[iA];
+      const b = worldLandmarks[iB];
+      const c = worldLandmarks[iC];
+      const ux = a.x - b.x;
+      const uy = a.y - b.y;
+      const uz = (a.z ?? 0) - (b.z ?? 0);
+      const vx = c.x - b.x;
+      const vy = c.y - b.y;
+      const vz = (c.z ?? 0) - (b.z ?? 0);
+      const magU = Math.hypot(ux, uy, uz);
+      const magV = Math.hypot(vx, vy, vz);
+      if (magU < 1e-6 || magV < 1e-6) return 180;
+      const cos = Math.max(-1, Math.min(1, (ux * vx + uy * vy + uz * vz) / (magU * magV)));
+      return (Math.acos(cos) * 180) / Math.PI;
+    }
+    return angleAt(landmarks[iA], landmarks[iB], landmarks[iC]);
+  };
 
   const wrist = landmarks[0];
   const thumbTip = landmarks[4];
@@ -393,7 +424,7 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
   const palmNorm = Math.max(palmLength, 1e-5);
 
   const fingerExt = (mcp: number, pip: number, tip: number, lo: number, spanVal: number) => {
-    const s = clamp01((angleAt(landmarks[mcp], landmarks[pip], landmarks[tip]) - 100) / 65);
+    const s = clamp01((angleAtJoint(mcp, pip, tip) - 100) / 65);
     const wristReach = clamp01((dist(wrist, landmarks[tip]) / baseScale - lo) / spanVal);
     const foldBack = clamp01(dist(landmarks[mcp], landmarks[tip]) / baseScale / 0.9);
     const r = 0.6 * wristReach + 0.4 * foldBack;
@@ -417,10 +448,8 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
   let pinkyExt = fingerExt(17, 18, 20, 0.95, 0.75);
 
   // Phase 2: Upgrade Pinky (17-18-19-20) Extension Normalization
-  // Combine radial ratio with PIP & DIP Joint Straightness (>= 150 deg). If pinky joint angles
-  // are straight and pinky tip is distal to its PIP joint, boost normalized pinky extension >= 0.78.
-  const pinkyPipDeg = angleAt(landmarks[17], landmarks[18], landmarks[20]);
-  const pinkyDipDeg = angleAt(landmarks[18], landmarks[19], landmarks[20]);
+  const pinkyPipDeg = angleAtJoint(17, 18, 20);
+  const pinkyDipDeg = angleAtJoint(18, 19, 20);
   const pinkyTipOverPip = dist(wrist, landmarks[20]) / Math.max(dist(wrist, landmarks[18]), 1e-5);
   const pinkyTipOverMcp =
     dist(landmarks[17], landmarks[20]) / Math.max(dist(landmarks[17], landmarks[18]), 1e-5);
@@ -434,9 +463,9 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
     pinkyExt = Math.max(pinkyExt, 0.78);
   }
 
-  // Phase 2: Upgrade Thumb (1-2-3-4) Extension Normalization with Palmar Plane Uncurled State
-  const thumbMcpDeg = angleAt(landmarks[1], landmarks[2], landmarks[4]);
-  const thumbIpDeg = angleAt(landmarks[2], landmarks[3], landmarks[4]);
+  // Phase 1 (v5.0): Signed Palmar-Plane Thumb Projection & 3D Joint Angle Normalization
+  const thumbMcpDeg = angleAtJoint(1, 2, 4);
+  const thumbIpDeg = angleAtJoint(2, 3, 4);
   const thumbStraight = clamp01((thumbIpDeg - 120) / 50);
   const thumbAbduct = clamp01((dist(thumbTip, indexMcp) / baseScale - 0.35) / 0.55);
   const thumbReach = clamp01((dist(wrist, thumbTip) / baseScale - 0.9) / 0.8);
@@ -447,18 +476,20 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
   const d4_13 = dist(thumbTip, ringMcp) / palmNorm;
   const d4_17 = dist(thumbTip, pinkyMcp) / palmNorm;
 
-  // Radial projection of thumb tip (4) beyond index MCP (5) along the palm arch (17 -> 5).
-  // Invariant to 2D roll, scale, and 3D yaw foreshortening:
-  // OPEN_PALM: thumbRadialProj >= +0.20 (thumb outside palm)
-  // FOUR_FINGERS: thumbRadialProj < +0.18 (thumb tucked across palm toward 9/13/17)
-  const ux = indexMcp.x - pinkyMcp.x;
-  const uy = indexMcp.y - pinkyMcp.y;
-  const vx = thumbTip.x - indexMcp.x;
-  const vy = thumbTip.y - indexMcp.y;
-  const thumbRadialProj = (vx * ux + vy * uy) / Math.max(ux * ux + uy * uy, 1e-6);
+  // vAcross = landmarks[17] - landmarks[5] (Index MCP -> Pinky MCP)
+  // vThumb  = landmarks[4]  - landmarks[5] (Index MCP -> Thumb Tip)
+  // thumbPalmarTuckRatio <= 0 when thumb is outside the index MCP (OPEN_PALM),
+  // thumbPalmarTuckRatio > 0 when thumb crosses inside the palm toward 9/13/17 (FOUR_FINGERS)
+  const vAcrossX = pinkyMcp.x - indexMcp.x;
+  const vAcrossY = pinkyMcp.y - indexMcp.y;
+  const vThumbX = thumbTip.x - indexMcp.x;
+  const vThumbY = thumbTip.y - indexMcp.y;
+  const thumbPalmarTuckRatio =
+    (vThumbX * vAcrossX + vThumbY * vAcrossY) /
+    Math.max(vAcrossX * vAcrossX + vAcrossY * vAcrossY, 1e-6);
 
   if (
-    thumbRadialProj >= 0.18 &&
+    thumbPalmarTuckRatio <= -0.18 &&
     (thumbMcpDeg >= 145 || thumbIpDeg >= 142) &&
     d4_9 >= 0.42 &&
     d4_13 >= 0.45 &&
@@ -472,20 +503,44 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
 
   const pipJointAnglesDeg: [number, number, number, number, number] = [
     Math.round(thumbIpDeg * 10) / 10,
-    Math.round(angleAt(landmarks[5], landmarks[6], landmarks[8]) * 10) / 10,
-    Math.round(angleAt(landmarks[9], landmarks[10], landmarks[12]) * 10) / 10,
-    Math.round(angleAt(landmarks[13], landmarks[14], landmarks[16]) * 10) / 10,
+    Math.round(angleAtJoint(5, 6, 8) * 10) / 10,
+    Math.round(angleAtJoint(9, 10, 12) * 10) / 10,
+    Math.round(angleAtJoint(13, 14, 16) * 10) / 10,
     Math.round(pinkyPipDeg * 10) / 10,
   ];
 
   const mcpJointAnglesDeg: [number, number, number, number] = [
-    Math.round(angleAt(wrist, landmarks[5], landmarks[6]) * 10) / 10,
-    Math.round(angleAt(wrist, landmarks[9], landmarks[10]) * 10) / 10,
-    Math.round(angleAt(wrist, landmarks[13], landmarks[14]) * 10) / 10,
-    Math.round(angleAt(wrist, landmarks[17], landmarks[18]) * 10) / 10,
+    Math.round(angleAtJoint(0, 5, 6) * 10) / 10,
+    Math.round(angleAtJoint(0, 9, 10) * 10) / 10,
+    Math.round(angleAtJoint(0, 13, 14) * 10) / 10,
+    Math.round(angleAtJoint(0, 17, 18) * 10) / 10,
   ];
 
-  const thumbIndexCAperture = Math.round((dist(thumbTip, landmarks[8]) / palmNorm) * 1000) / 1000;
+  const pinchTipDist = dist(thumbTip, landmarks[8]) / palmNorm;
+  const pinchEyeletSpread = dist(landmarks[3], landmarks[6]) / palmNorm;
+  const d8_0 = dist(landmarks[8], wrist) / palmNorm;
+  const d5_0 = dist(landmarks[5], wrist) / palmNorm;
+  const d8_12 = dist(landmarks[8], landmarks[12]) / palmNorm;
+  const threeMrp = (middleExt + ringExt + pinkyExt) / 3.0;
+
+  // Phase 2 (v5.0): Dual-Manifold Teardrop Eyelet Geometry for PINCH
+  const meanMrpPipDeg =
+    (pipJointAnglesDeg[2] + pipJointAnglesDeg[3] + pipJointAnglesDeg[4]) / 3.0;
+  const isTrefoilPinch =
+    pinchTipDist <= 0.36 && threeMrp > 0.45 && indexExt < 0.72 && pipJointAnglesDeg[1] < 160;
+  const isPrecisionClosedPinch =
+    pinchTipDist <= 0.30 &&
+    pinchEyeletSpread >= 0.28 &&
+    pinchEyeletSpread >= pinchTipDist + 0.14 &&
+    (d8_0 > d5_0 * 1.02 || d8_12 >= 0.36) &&
+    indexExt < 0.72 &&
+    middleExt < 0.42 &&
+    ringExt < 0.42 &&
+    pinkyExt < 0.42 &&
+    meanMrpPipDeg < 115;
+  const isCanonicalPinchEyelet = isTrefoilPinch || isPrecisionClosedPinch;
+
+  const thumbIndexCAperture = Math.round(pinchTipDist * 1000) / 1000;
 
   return {
     palmWidth: Math.round(palmWidth * 1000) / 1000,
@@ -505,13 +560,16 @@ export function extractHandParameters(landmarks: HandLandmark2D[]): HandParamete
     },
     interFingerTipDistances: {
       thumbIndex: thumbIndexCAperture,
-      indexMiddle: Math.round((dist(landmarks[8], landmarks[12]) / palmNorm) * 1000) / 1000,
+      indexMiddle: Math.round(d8_12 * 1000) / 1000,
       middleRing: Math.round((dist(landmarks[12], landmarks[16]) / palmNorm) * 1000) / 1000,
       ringPinky: Math.round((dist(landmarks[16], landmarks[20]) / palmNorm) * 1000) / 1000,
       thumbPinkySpan: Math.round((span / palmNorm) * 1000) / 1000,
     },
     normalHandSize: Math.round(palmLength * 1000) / 1000,
     handDistanceEstimate: Math.round((1.0 / Math.max(0.05, palmLength)) * 100) / 100,
+    thumbPalmarTuckRatio: Math.round(thumbPalmarTuckRatio * 1000) / 1000,
+    pinchEyeletSpread: Math.round(pinchEyeletSpread * 1000) / 1000,
+    isCanonicalPinchEyelet,
   };
 }
 
@@ -550,6 +608,9 @@ export function evaluateObjectPresenceEnsemble(
     apertureOccupancyRatio?: number;
     skinDivergenceScore?: number;
     protrudingEdgeLineScore?: number;
+    protrusionScore?: number;
+    bareHandConfirmed?: boolean;
+    carryingObjectLatched?: boolean;
   }
 ): ObjectPresenceEnsembleMetrics {
   if (!landmarks || landmarks.length < 21) {
@@ -563,12 +624,34 @@ export function evaluateObjectPresenceEnsemble(
       activeSignalCount: 0,
       isCanonicalBareFist: false,
       confirmedObjectInHand: false,
+      protrusionScore: 0,
+      bareHandConfirmed: false,
+      carryingObjectLatched: false,
     };
   }
 
   const params = handParams || extractHandParameters(landmarks);
   const feat = extractFrameStructuralFeatures(landmarks, params);
   const bareFist = isStructuralBareFist(feat, options);
+  const bareHandConfirmed = Boolean(options?.bareHandConfirmed || bareFist);
+  const protrusionScore = Math.round(clamp01(options?.protrusionScore ?? 0) * 100) / 100;
+
+  if (options?.bareHandConfirmed && bareFist) {
+    return {
+      signalA1_SkinDivergence: 0,
+      signalA2_GapObstruction: 0,
+      signalA3_ProtrudingEdgeLines: 0,
+      signalA4_McpPipDissociation: 0,
+      signalA5_ClampRigidity: 0,
+      ensembleScore: 0,
+      activeSignalCount: 0,
+      isCanonicalBareFist: true,
+      confirmedObjectInHand: false,
+      protrusionScore: 0,
+      bareHandConfirmed: true,
+      carryingObjectLatched: false,
+    };
+  }
 
   const [thumb, idx, mid, rng, pnk] = params.fingerFlexion;
   const fourMean = feat.fourMean;
@@ -625,11 +708,13 @@ export function evaluateObjectPresenceEnsemble(
     }
   }
 
-  // Signal A3 (weight 0.20): Protruding Linear Object Boundary Detector
+  // Signal A3 (weight 0.20): Protruding Linear Object Boundary Detector + 16-Ray Boundary Protrusion
   let signalA3 = 0;
   if (!bareFist) {
     if (options?.protrudingEdgeLineScore !== undefined) {
-      signalA3 = clamp01(options.protrudingEdgeLineScore);
+      signalA3 = clamp01(Math.max(options.protrudingEdgeLineScore, protrusionScore));
+    } else if (protrusionScore > 0) {
+      signalA3 = protrusionScore;
     } else if (
       feat.verticalKnuckleStack &&
       (feat.horizTipCount >= 3 || feat.horizPipCount >= 3) &&
@@ -691,15 +776,24 @@ export function evaluateObjectPresenceEnsemble(
     0.15 * signalA4 +
     0.1 * signalA5 +
     selfSkinDiscount;
-  const ensembleScore = Math.round(clamp01(rawWeighted) * 100) / 100;
+  let ensembleScore = Math.round(clamp01(rawWeighted) * 100) / 100;
 
   const signals = [signalA1, signalA2, signalA3, signalA4, signalA5];
   const activeSignalCount = signals.filter((s) => s >= 0.45).length;
 
+  const carryingLatched = Boolean(
+    options?.carryingObjectLatched && !bareFist && !params.isCanonicalPinchEyelet && fourMean < 0.58
+  );
+  if (carryingLatched) {
+    ensembleScore = Math.max(ensembleScore, 0.68);
+  }
+
   const confirmedObjectInHand =
     !bareFist &&
+    !params.isCanonicalPinchEyelet &&
     fourMean < 0.72 &&
-    ((activeSignalCount >= 2 && ensembleScore >= 0.55) ||
+    (carryingLatched ||
+      (activeSignalCount >= 2 && ensembleScore >= 0.55) ||
       signalA2 >= 0.95 ||
       (signalA4 >= 0.95 && signalA2 >= 0.65));
 
@@ -713,6 +807,9 @@ export function evaluateObjectPresenceEnsemble(
     activeSignalCount,
     isCanonicalBareFist: bareFist,
     confirmedObjectInHand,
+    protrusionScore,
+    bareHandConfirmed,
+    carryingObjectLatched: carryingLatched,
   };
 }
 
@@ -720,7 +817,8 @@ export function evaluateObjectPresenceEnsemble(
  * Phase 1 & Phase 2 — Two-Factor + 5-Signal Physical Object Confirmation Gate (`detectObjectGrasp`):
  * Concludes `isObjectGrasp = true` ONLY when there is confirmed evidence that the user
  * has a physical object in their hand (Ensemble A / Biomechanical Invariants) and NEVER
- * blocks a canonical bare FIST (`isCanonicalBareFist`) or open posture (`isPositiveOpenPostureOverride`).
+ * blocks a canonical bare FIST (`isCanonicalBareFist`), canonical PINCH (`isCanonicalPinchEyelet`),
+ * or open posture (`isPositiveOpenPostureOverride`).
  */
 export function detectObjectGrasp(
   landmarks: HandLandmark2D[],
@@ -732,6 +830,9 @@ export function detectObjectGrasp(
     apertureOccupancyRatio?: number;
     skinDivergenceScore?: number;
     protrudingEdgeLineScore?: number;
+    protrusionScore?: number;
+    bareHandConfirmed?: boolean;
+    carryingObjectLatched?: boolean;
   }
 ): ObjectGraspAnalysis {
   if (!landmarks || landmarks.length < 21) {
@@ -831,11 +932,17 @@ export function detectObjectGrasp(
 
   const objectEnsemble = evaluateObjectPresenceEnsemble(landmarks, params, options);
   const bareFistOverride = objectEnsemble.isCanonicalBareFist;
+  const pinchEyeletOverride = Boolean(
+    params.isCanonicalPinchEyelet &&
+      !options?.foreignObjectDetected &&
+      visualOccupancy < 0.45
+  );
 
   // 0a. Check Admin-Learned Negative Grasp Signatures (enabled in both offline & live webcam for user-recorded captures)
   if (
     !isPositiveOpenPostureOverride &&
     !bareFistOverride &&
+    !pinchEyeletOverride &&
     fourMean <= 0.65 &&
     activeAdminModel.negativeGraspSignatures.length > 0
   ) {
@@ -895,7 +1002,7 @@ export function detectObjectGrasp(
   }
 
   // 0b. Check In-App Autonomous AI Agent Synthesized Patches & Side-Edge Book/Object Clamps
-  if (!isPositiveOpenPostureOverride && !bareFistOverride) {
+  if (!isPositiveOpenPostureOverride && !bareFistOverride && !pinchEyeletOverride) {
     const agentEval = evaluateAgentPatches(landmarks, params, {
       foreignObjectDetected: options?.foreignObjectDetected,
       apertureOccupancyRatio: visualOccupancy,
@@ -966,6 +1073,7 @@ export function detectObjectGrasp(
 
   if (
     !options?.webcamMode &&
+    !pinchEyeletOverride &&
     (aspect < 0.38 || aspect > 3.6) &&
     !isNaturalSideProfileFreeHand
   ) {
@@ -980,9 +1088,29 @@ export function detectObjectGrasp(
     };
   }
 
-  // Phase 1 Bare-Fist Immunity & Factor B Strict Confirmation Gate:
+  // Temporal Object-Carry Memory Latch (v5.0 Phase 3)
+  if (
+    options?.carryingObjectLatched &&
+    !bareFistOverride &&
+    !isPositiveOpenPostureOverride &&
+    !pinchEyeletOverride &&
+    fourMean < 0.58
+  ) {
+    return {
+      isObjectGrasp: true,
+      reason: "BOOK_OR_OBJECT_GRASP",
+      bimodalityScore: Math.round(bimodalityScore * 100) / 100,
+      cApertureRatio: Math.round(pinchNorm * 100) / 100,
+      lumbricalFlatness: Math.round(lumbricalFlatness * 100) / 100,
+      apertureOccupancyRatio: Math.max(visualOccupancy, 0.80),
+      objectEnsemble,
+    };
+  }
+
+  // Phase 1 Bare-Fist Immunity, Canonical Pinch Immunity & Factor B Strict Confirmation Gate:
   if (
     bareFistOverride ||
+    pinchEyeletOverride ||
     isPositiveOpenPostureOverride ||
     (options?.webcamMode && !options?.foreignObjectDetected && visualOccupancy < 0.45)
   ) {
@@ -1214,6 +1342,11 @@ export function classifyHandGesture(
     apertureOccupancyRatio?: number;
     skinDivergenceScore?: number;
     protrudingEdgeLineScore?: number;
+    protrusionScore?: number;
+    bareHandConfirmed?: boolean;
+    carryingObjectLatched?: boolean;
+    worldLandmarks?: HandLandmark2D[];
+    previousGesture?: RecognizedGesture;
     handedness?: "Left" | "Right";
     localeCountryCode?: string;
     userCalib?: Partial<UserAnatomicalCalibration> | null;
@@ -1235,7 +1368,7 @@ export function classifyHandGesture(
   localeResolution?: LocaleGestureResolution;
   biometricVerdict?: CaregiverBiometricVerdict;
 } {
-  const handParams = extractHandParameters(landmarks);
+  const handParams = extractHandParameters(landmarks, options?.worldLandmarks);
   const normalizedFlexion = options?.userCalib
     ? normalizeFingerROM(handParams.fingerFlexion, options.userCalib)
     : handParams.fingerFlexion;
@@ -1304,6 +1437,7 @@ export function classifyHandGesture(
   const wrist = landmarks[0];
   const palmLen = Math.max(dist(wrist, landmarks[9]), 1e-5);
   const pinchNorm = dist(landmarks[4], landmarks[8]) / palmLen;
+  const d4_5 = dist(landmarks[4], landmarks[5]) / palmLen;
   const d4_9 = dist(landmarks[4], landmarks[9]) / palmLen;
   const d4_13 = dist(landmarks[4], landmarks[13]) / palmLen;
   const d4_6 = dist(landmarks[4], landmarks[6]) / palmLen;
@@ -1342,20 +1476,30 @@ export function classifyHandGesture(
     UNKNOWN: 0.15,
   };
 
-  // 1. PINCH (OK sign with 3 fingers extended OR precision pinch with 3 fingers curled)
-  if (
-    pinchNorm < 0.36 &&
-    (threeMrp > 0.45 ||
-      (pinchNorm < 0.22 &&
-        thumb >= 0.3 &&
-        d4_6 > 0.32 &&
-        middle < 0.38 &&
-        ring < 0.38 &&
-        pinky < 0.38))
-  ) {
-    const contactQuality = clamp01(1.0 - pinchNorm / 0.38);
+  // 1. PINCH (v5.0 Phase 2: Dual-Manifold Teardrop Eyelet Geometry + Hysteresis Latch + Lateral Suppression)
+  const pinchEyeletSpread = handParams.pinchEyeletSpread ?? dist(landmarks[3], landmarks[6]) / palmLen;
+  const isHysteresisPinch =
+    options?.previousGesture === "PINCH" &&
+    pinchNorm <= 0.40 &&
+    index < 0.72 &&
+    (threeMrp > 0.42 || (pinchEyeletSpread >= 0.26 && middle < 0.42 && ring < 0.42 && pinky < 0.42));
+  const isPinchLocked =
+    Boolean(handParams.isCanonicalPinchEyelet) ||
+    isHysteresisPinch ||
+    (pinchNorm < 0.36 &&
+      index < 0.72 &&
+      (threeMrp > 0.45 ||
+        (pinchNorm < 0.22 &&
+          thumb >= 0.3 &&
+          d4_6 > 0.32 &&
+          middle < 0.38 &&
+          ring < 0.38 &&
+          pinky < 0.38)));
+
+  if (isPinchLocked) {
+    const contactQuality = clamp01(1.0 - pinchNorm / 0.42);
     const ringBonus = threeMrp > 0.45 ? threeMrp : 1.0 - threeMrp;
-    scores.PINCH = Math.min(0.98, 0.72 + 0.18 * contactQuality + 0.08 * ringBonus);
+    scores.PINCH = Math.min(0.98, Math.max(0.86, 0.76 + 0.14 * contactQuality + 0.08 * ringBonus));
   }
 
   // 2. CALL_ME (Shaka: Pinky extended + Thumb abducted, Index/Middle/Ring curled)
@@ -1387,7 +1531,7 @@ export function classifyHandGesture(
   }
 
   // 5. THREE_FINGERS (classic Index + Middle + Ring extended, Pinky genuinely curled/flexed)
-  const pinkyPipDeg = angleAt(landmarks[17], landmarks[18], landmarks[20]);
+  const pinkyPipDeg = handParams.pipJointAnglesDeg?.[4] ?? angleAt(landmarks[17], landmarks[18], landmarks[20]);
   const pinkyGenuinelyCurled =
     (pinky < 0.35 && pinkyPipDeg < 135) ||
     (pinky < 0.46 && pinkyPipDeg < 128 && threeImr - pinky > 0.30);
@@ -1405,24 +1549,29 @@ export function classifyHandGesture(
     );
   }
 
-  // 6. FOUR_FINGERS vs OPEN_PALM (all 4 fingers extended; require intentional thumb flexion for FOUR_FINGERS)
+  // 6. FOUR_FINGERS vs OPEN_PALM (v5.0 Phase 1: Signed Palmar-Plane Thumb Projection)
   const openGate = options?.webcamMode ? 0.44 : 0.50;
   const pinkyOpenGate = options?.webcamMode ? 0.35 : 0.42;
   const pinkyStraightOrExtended =
     pinky > pinkyOpenGate || (pinky >= 0.35 && pinkyPipDeg >= 140);
-  const d4_17 = dist(landmarks[4], landmarks[17]) / palmLen;
-  const thumbIpDeg = angleAt(landmarks[2], landmarks[3], landmarks[4]);
-  const ux = landmarks[5].x - landmarks[17].x;
-  const uy = landmarks[5].y - landmarks[17].y;
-  const vx = landmarks[4].x - landmarks[5].x;
-  const vy = landmarks[4].y - landmarks[5].y;
-  const thumbRadialProj = (vx * ux + vy * uy) / Math.max(ux * ux + uy * uy, 1e-6);
+  const thumbIpDeg = handParams.pipJointAnglesDeg?.[0] ?? angleAt(landmarks[2], landmarks[3], landmarks[4]);
+  const thumbMcpDeg = angleAt(landmarks[1], landmarks[2], landmarks[4]);
+  const tuck = handParams.thumbPalmarTuckRatio ?? 0;
 
-  const d49Gate = options?.webcamMode ? 0.42 : 0.54;
-  const d413Gate = options?.webcamMode ? 0.45 : 0.58;
+  // Case A (OPEN_PALM Lock): thumb outside or along index edge (not crossed over palm)
+  // Case B (FOUR_FINGERS Lock): thumb actively crossed inside palm toward middle/ring/pinky MCPs
+  const thumbOpenOutsideOrAlongIndex =
+    tuck <= -0.18 ||
+    (Boolean(options?.webcamMode) &&
+      tuck <= 0.22 &&
+      d4_5 >= 0.24 &&
+      d4_9 >= 0.44 &&
+      (thumbIpDeg >= 138 || thumbMcpDeg >= 146));
+
   const thumbTuckedAcrossPalm =
-    thumbRadialProj < 0.18 ||
-    (d4_9 < d49Gate && (d4_13 < d413Gate || thumb < 0.35) && thumbRadialProj < 0.25);
+    !thumbOpenOutsideOrAlongIndex &&
+    ((tuck >= 0.01 && d4_9 < 0.56 && (d4_5 < 0.42 || thumb < 0.35 || d4_13 < 0.69)) ||
+      (tuck >= -0.18 && d4_5 < 0.22 && d4_9 < 0.50));
 
   if (
     index > openGate &&
@@ -1434,17 +1583,15 @@ export function classifyHandGesture(
   ) {
     if (thumbTuckedAcrossPalm) {
       const thumbTucked = clamp01(1.0 - Math.min(thumb, d4_9));
-      scores.FOUR_FINGERS = Math.min(0.97, 0.66 + 0.2 * fourMean + 0.11 * thumbTucked);
-      scores.OPEN_PALM = 0.35 * 0.65;
-    } else if (thumb >= 0.35 || thumbIpDeg >= 145) {
-      const effectiveThumb = Math.max(thumb, 0.52);
-      const effectivePinky = Math.max(pinky, pinkyPipDeg >= 145 ? 0.72 : pinky);
+      scores.FOUR_FINGERS = Math.min(0.97, 0.68 + 0.2 * fourMean + 0.11 * thumbTucked);
+      scores.OPEN_PALM = 0.18;
+    } else if (thumbOpenOutsideOrAlongIndex || thumb >= 0.32 || thumbIpDeg >= 142 || thumbMcpDeg >= 146) {
+      const effectiveThumb = Math.max(thumb, 0.82);
+      const effectivePinky = Math.max(pinky, pinkyPipDeg >= 145 ? 0.78 : pinky);
       const allFive = (effectiveThumb + index + middle + ring + effectivePinky) / 5.0;
-      scores.OPEN_PALM = Math.min(0.97, 0.66 + 0.3 * allFive);
-      // Sub-task 1.3: Apply lateral inhibition (x 0.65) to FOUR_FINGERS and THREE_FINGERS
-      // when index, middle, ring are extended and thumb + pinky are not folded into the palm
-      scores.FOUR_FINGERS = Math.min(scores.FOUR_FINGERS, 0.32) * 0.65;
-      scores.THREE_FINGERS = scores.THREE_FINGERS * 0.65;
+      scores.OPEN_PALM = Math.max(0.92, Math.min(0.98, 0.68 + 0.3 * allFive));
+      scores.FOUR_FINGERS = Math.min(scores.FOUR_FINGERS, 0.32) * 0.25;
+      scores.THREE_FINGERS = scores.THREE_FINGERS * 0.50;
     }
   }
 
@@ -1501,11 +1648,15 @@ export function classifyHandGesture(
       pinkyStraightOrExtended &&
       !pinkyGenuinelyCurled &&
       !thumbTuckedAcrossPalm &&
-      (thumb >= 0.35 || thumbIpDeg >= 145);
+      (thumbOpenOutsideOrAlongIndex || thumb >= 0.32 || thumbIpDeg >= 142 || thumbMcpDeg >= 146);
 
     for (const [gestKey, proto] of Object.entries(activeAdminModel.gesturePrototypes)) {
       const key = gestKey as Exclude<RecognizedGesture, "UNKNOWN">;
       if (proto && Array.isArray(proto.centroid) && proto.centroid.length === 5) {
+        // Phase 2 Lateral Suppression: When PINCH eyelet is locked, prevent competing prototypes from overriding PINCH
+        if (isPinchLocked && key !== "PINCH") {
+          continue;
+        }
         // Direct 21-landmark mirror-invariant shape match for user-recorded Admin positive prototypes
         if (proto.normalizedShape21 && proto.normalizedShape21.length === 21) {
           const shapeDist = computeMirrorInvariantShapeDistance(
@@ -1591,13 +1742,21 @@ export function classifyHandGesture(
             0.05 * Math.min(1, (proto.confidenceBoost || 1) - 0.95);
           scores[key] = Math.min(0.99, Math.max(scores[key], matchScore));
           if (key === "OPEN_PALM" && isFiveFingerOpenPosture) {
-            scores.FOUR_FINGERS *= 0.65;
-            scores.THREE_FINGERS *= 0.65;
+            scores.FOUR_FINGERS *= 0.25;
+            scores.THREE_FINGERS *= 0.50;
           }
           personalizedBoostApplied = true;
         }
       }
     }
+  }
+
+  // Phase 2 Lateral Suppression for PINCH so top1-top2 margin >= 0.45 and never collapses to UNKNOWN
+  if (isPinchLocked) {
+    scores.THREE_FINGERS *= 0.30;
+    scores.FOUR_FINGERS *= 0.30;
+    scores.FIST *= 0.30;
+    scores.OPEN_PALM *= 0.30;
   }
 
   // Apply Personalized AI Prototype Calibration Boosts & Centroid Matching

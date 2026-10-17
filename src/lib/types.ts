@@ -60,6 +60,12 @@ export interface HandParameters {
   };
   normalHandSize?: number;
   handDistanceEstimate?: number;
+  /** v5.0 Signed Palmar Thumb-Tuck Coordinate: <= 0 when thumb is outside index MCP (OPEN_PALM), >= 0.24 when tucked across palm (FOUR_FINGERS) */
+  thumbPalmarTuckRatio?: number;
+  /** v5.0 Normalized thumb-IP (3) to index-PIP (6) teardrop eyelet arch spread */
+  pinchEyeletSpread?: number;
+  /** v5.0 True when dual-manifold teardrop pinch eyelet invariant is satisfied */
+  isCanonicalPinchEyelet?: boolean;
 }
 
 export type GestureLabel = RecognizedGesture;
@@ -97,6 +103,12 @@ export interface ObjectPresenceEnsembleMetrics {
   isCanonicalBareFist: boolean;
   /** True when ensemble confirms a physical object is in the hand */
   confirmedObjectInHand: boolean;
+  /** v5.0 16-ray boundary-crossing object protrusion score [0..1] */
+  protrusionScore?: number;
+  /** v5.0 True when interior finger curl matches dorsal knuckle skin and 0 boundary protrusions */
+  bareHandConfirmed?: boolean;
+  /** v5.0 True when temporal ObjectCarryStateTracker has latched object carry across frames */
+  carryingObjectLatched?: boolean;
 }
 
 export type IntentionalityStatus =

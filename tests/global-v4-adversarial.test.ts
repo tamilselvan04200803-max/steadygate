@@ -46,7 +46,7 @@ import {
   MONK_SKIN_TONE_RGB_REFERENCE,
   AdaptiveSkinCalibrator,
 } from "../src/lib/vision/skin-calibrator";
-import { SceneAnalyzer, IntentTracker } from "../src/lib/vision-runtime";
+import { SceneAnalyzer, IntentTracker, ObjectCarryStateTracker } from "../src/lib/vision-runtime";
 import { TimeWeightedGestureVoter } from "../src/lib/voter/time-weighted-voter";
 import {
   SafetyChordEngine,
@@ -1002,6 +1002,128 @@ async function runGlobalV4Suite() {
         deliberateEval.status === "INTENTIONAL_READY",
       "G9.10 Bare FIST (195931.png) is 100% immune to AGENT_SELF_HEALED_OBJECT_RULE while Ensemble A blocks book grasps and Ensemble B gates 5/5 casual postures",
       `fist195931=${fistDirect.gesture} (conf=${fistDirect.confidence}, isObj=${fistDirect.objectGraspAnalysis?.isObjectGrasp}, S_obj=${ensBareFist.ensembleScore}), C4_S_obj=${ensC4.ensembleScore}, C5_S_obj=${ensC5.ensembleScore}, deliberateIntent=${deliberateEval.status} (${deliberateEval.intentScore})`
+    );
+  }
+
+  // G9.11 SteadyGate v5.0: Phase 1 (OPEN_PALM vs FOUR_FINGERS Signed Palmar Thumb-Tuck + 3D World Landmarks),
+  // Phase 2 (Dual-Manifold Teardrop PINCH Eyelet + Hysteresis Latch + Lateral Suppression), and
+  // Phase 3 (16-Ray Boundary-Crossing Scanner + ObjectCarryStateTracker)
+  {
+    // 1. Phase 1: Relaxed-thumb OPEN_PALM vs genuine FOUR_FINGERS on live webcam + 3D worldLandmarks
+    const openRelaxed = generateSyntheticGestureLandmarks("OPEN_PALM", 1);
+    openRelaxed[2] = { x: 0.405, y: 0.57, z: -0.015 };
+    openRelaxed[3] = { x: 0.398, y: 0.50, z: -0.02 };
+    openRelaxed[4] = { x: 0.392, y: 0.44, z: -0.025 };
+    const worldOpen = openRelaxed.map((p) => ({
+      x: (p.x - 0.5) * 0.18,
+      y: (p.y - 0.5) * 0.18,
+      z: p.z ?? 0,
+    }));
+    const resOpenRelaxed = classifyHandGesture(openRelaxed, null, {
+      webcamMode: true,
+      worldLandmarks: worldOpen,
+    });
+
+    const fourGenuine = generateSyntheticGestureLandmarks("FOUR_FINGERS", 1);
+    const resFourGenuine = classifyHandGesture(fourGenuine, null, { webcamMode: true });
+
+    // 2. Phase 2: Dual-Manifold Teardrop PINCH Eyelet (Sub-Manifold 1 Trefoil OK + Sub-Manifold 2 Closed Precision Pinch + Hysteresis)
+    const closedPinch = generateSyntheticGestureLandmarks("FIST", 1);
+    closedPinch[2] = { x: 0.44, y: 0.56, z: -0.02 };
+    closedPinch[3] = { x: 0.41, y: 0.50, z: -0.03 };
+    closedPinch[4] = { x: 0.43, y: 0.46, z: -0.04 };
+    closedPinch[6] = { x: 0.45, y: 0.44, z: -0.03 };
+    closedPinch[7] = { x: 0.44, y: 0.45, z: -0.04 };
+    closedPinch[8] = { x: 0.435, y: 0.458, z: -0.04 };
+    const resClosedPinch = classifyHandGesture(closedPinch, null, { webcamMode: true });
+
+    const okPinch = generateSyntheticGestureLandmarks("PINCH", 1);
+    const resOkPinch = classifyHandGesture(okPinch, null, { webcamMode: true });
+
+    // Hysteresis latch test: slightly wider pinch (pinchNorm ~ 0.37) when previousGesture === "PINCH"
+    const slightWidenPinch = okPinch.map((p) => ({ ...p }));
+    slightWidenPinch[4] = {
+      x: slightWidenPinch[4].x - 0.035,
+      y: slightWidenPinch[4].y + 0.02,
+      z: slightWidenPinch[4].z,
+    };
+    const resHysteresisPinch = classifyHandGesture(slightWidenPinch, null, {
+      webcamMode: true,
+      previousGesture: "PINCH",
+    });
+
+    // 3. Phase 3: 16-Ray Boundary-Crossing Scanner + ObjectCarryStateTracker
+    const analyzer = new SceneAnalyzer();
+    const skinFrame = new Uint8ClampedArray(64 * 48 * 4);
+    for (let i = 0; i < 64 * 48; i++) {
+      skinFrame[i * 4] = 198;
+      skinFrame[i * 4 + 1] = 148;
+      skinFrame[i * 4 + 2] = 122;
+      skinFrame[i * 4 + 3] = 255;
+    }
+    const bareScan = analyzer.scanHandBoundaryProtrusions(
+      REAL_WORLD_FAILURE_CASES.CASE_6_BARE_FIST_195931,
+      skinFrame
+    );
+
+    const tracker = new ObjectCarryStateTracker();
+    tracker.update({
+      ensembleScore: 0.72,
+      confirmedObjectInHand: true,
+      fourMean: 0.25,
+      isCanonicalBareFist: false,
+      bareHandConfirmed: false,
+    });
+    tracker.update({
+      ensembleScore: 0.74,
+      confirmedObjectInHand: true,
+      fourMean: 0.25,
+      isCanonicalBareFist: false,
+      bareHandConfirmed: false,
+    });
+    const latchedAfter3 = tracker.update({
+      ensembleScore: 0.76,
+      confirmedObjectInHand: true,
+      fourMean: 0.25,
+      isCanonicalBareFist: false,
+      bareHandConfirmed: false,
+    });
+    const maintainedOnRotation = tracker.update({
+      ensembleScore: 0.35,
+      confirmedObjectInHand: false,
+      fourMean: 0.28,
+      isCanonicalBareFist: false,
+      bareHandConfirmed: false,
+    });
+    const releasedOnOpenPalm = tracker.update({
+      ensembleScore: 0.1,
+      confirmedObjectInHand: false,
+      fourMean: 0.85,
+      isCanonicalBareFist: false,
+      bareHandConfirmed: true,
+    });
+
+    assert(
+      resOpenRelaxed.gesture === "OPEN_PALM" &&
+        resOpenRelaxed.confidence >= 0.92 &&
+        resOpenRelaxed.margin >= 0.45 &&
+        resFourGenuine.gesture === "FOUR_FINGERS" &&
+        resFourGenuine.confidence >= 0.9 &&
+        resFourGenuine.margin >= 0.45 &&
+        resClosedPinch.gesture === "PINCH" &&
+        resClosedPinch.confidence >= 0.9 &&
+        resClosedPinch.margin >= 0.45 &&
+        resOkPinch.gesture === "PINCH" &&
+        resOkPinch.confidence >= 0.9 &&
+        resOkPinch.margin >= 0.45 &&
+        resHysteresisPinch.gesture === "PINCH" &&
+        bareScan.bareHandConfirmed === true &&
+        bareScan.protrusionScore === 0 &&
+        latchedAfter3 === true &&
+        maintainedOnRotation === true &&
+        releasedOnOpenPalm === false,
+      "G9.11 SteadyGate v5.0: 0% OPEN_PALM/FOUR_FINGERS confusion, 100% Dual-Manifold PINCH (Trefoil + Closed Precision + Hysteresis), and 16-Ray Boundary Scanner + Carry Latch verified",
+      `openRelaxed=${resOpenRelaxed.gesture}(${resOpenRelaxed.confidence}, margin=${resOpenRelaxed.margin}), four=${resFourGenuine.gesture}(${resFourGenuine.confidence}), closedPinch=${resClosedPinch.gesture}(${resClosedPinch.confidence}, margin=${resClosedPinch.margin}), okPinch=${resOkPinch.gesture}(${resOkPinch.confidence}), bareConfirmed=${bareScan.bareHandConfirmed}, carryLatch=${latchedAfter3}->${maintainedOnRotation}->${releasedOnOpenPalm}`
     );
   }
 

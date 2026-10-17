@@ -36,6 +36,7 @@ import {
   LandmarkSmoother,
   GestureVoter,
   IntentTracker,
+  ObjectCarryStateTracker,
   ErrorCollector,
   makeSessionId,
   postTelemetry,
@@ -114,6 +115,7 @@ type Runtime = {
   lastTelemetry: number;
   lastHandTs: number;
   lastLandmarks: HandLandmark2D[] | null;
+  lastWorldLandmarks: HandLandmark2D[] | null;
 };
 
 export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
@@ -228,6 +230,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
     lastTelemetry: 0,
     lastHandTs: 0,
     lastLandmarks: null as HandLandmark2D[] | null,
+    lastWorldLandmarks: null as HandLandmark2D[] | null,
   });
   const sceneRef = useRef(new SceneAnalyzer());
   const smootherRef = useRef(new LandmarkSmoother());
@@ -235,6 +238,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   const timeVoterRef = useRef(new TimeWeightedGestureVoter(350, 0.6, 0.35));
   const intentionalityEngineRef = useRef(new IntentionalityEnsembleEngine());
   const intentRef = useRef(new IntentTracker());
+  const objectCarryRef = useRef(new ObjectCarryStateTracker());
   const errorsRef = useRef(new ErrorCollector());
   const sessionRef = useRef<string>("");
   const lastClassRef = useRef<{
@@ -580,15 +584,21 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
           );
           r.framesTotal += 1;
           const lm = res.landmarks?.[0];
+          const wlm = res.worldLandmarks?.[0];
           if (lm && lm.length === 21) {
             r.framesWithHand += 1;
             r.lastHandTs = now;
             const raw: HandLandmark2D[] = lm.map((p) => ({ x: p.x, y: p.y, z: p.z }));
             normLandmarks = smootherRef.current.smooth(raw, now);
             r.lastLandmarks = normLandmarks;
+            r.lastWorldLandmarks =
+              wlm && wlm.length === 21
+                ? wlm.map((p) => ({ x: p.x, y: p.y, z: p.z }))
+                : null;
             handPresent = true;
           } else {
             r.lastLandmarks = null;
+            r.lastWorldLandmarks = null;
             handPresent = false;
           }
         } catch (e) {
@@ -669,8 +679,11 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       const protrudingEdgeLineScore = webcam
         ? sceneRef.current.computeProtrudingEdgeLineScore(normLandmarks)
         : undefined;
+      const boundaryScan = webcam
+        ? sceneRef.current.scanHandBoundaryProtrusions(normLandmarks)
+        : { protrusionScore: 0, bareHandConfirmed: false, protrudingRayCount: 0 };
       const foreignObjectDetected = webcam
-        ? (apertureOccupancyRatio ?? 0) >= 0.45
+        ? (apertureOccupancyRatio ?? 0) >= 0.45 || boundaryScan.protrusionScore >= 0.5
         : false;
       classification = classifyHandGesture(normLandmarks, user, {
         faceOverlapDetected,
@@ -679,8 +692,28 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         apertureOccupancyRatio,
         skinDivergenceScore,
         protrudingEdgeLineScore,
+        protrusionScore: webcam ? boundaryScan.protrusionScore : undefined,
+        bareHandConfirmed: webcam ? boundaryScan.bareHandConfirmed : undefined,
+        carryingObjectLatched: webcam ? objectCarryRef.current.isLatched() : false,
+        worldLandmarks: webcam ? r.lastWorldLandmarks ?? undefined : undefined,
+        previousGesture: lastClassRef.current?.gesture,
         localeCountryCode,
       });
+      if (webcam) {
+        const flex = classification.handParams.fingerFlexion;
+        const fourMean = (flex[1] + flex[2] + flex[3] + flex[4]) / 4;
+        const ens = classification.objectGraspAnalysis?.objectEnsemble;
+        objectCarryRef.current.update({
+          ensembleScore: ens?.ensembleScore ?? 0,
+          confirmedObjectInHand: Boolean(
+            classification.objectGraspAnalysis?.isObjectGrasp || ens?.confirmedObjectInHand
+          ),
+          fourMean,
+          isCanonicalBareFist: Boolean(ens?.isCanonicalBareFist),
+          bareHandConfirmed: boundaryScan.bareHandConfirmed,
+          isCanonicalPinchEyelet: Boolean(classification.handParams.isCanonicalPinchEyelet),
+        });
+      }
       setHandParams(classification.handParams);
       setGraspAnalysis(
         classification.objectGraspAnalysis ?? {
@@ -1371,11 +1404,25 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
                 ? graspAnalysis.reason
                 : graspAnalysis?.objectEnsemble?.isCanonicalBareFist
                 ? "BARE FIST IMMUNE (0% FP)"
+                : handParams?.isCanonicalPinchEyelet
+                ? "PINCH EYELET LOCKED"
                 : "FREE-HAND VERIFIED"}
             </strong>{" "}
             · S_obj: <strong>{graspAnalysis?.objectEnsemble?.ensembleScore ?? 0}</strong> (
             {graspAnalysis?.objectEnsemble?.activeSignalCount ?? 0}/5)
           </div>
+          {handParams && (
+            <div className="text-[10px] font-mono text-slate-400">
+              ThumbTuck: <strong>{handParams.thumbPalmarTuckRatio ?? 0}</strong> · PinchEyelet:{" "}
+              <strong>{handParams.pinchEyeletSpread ?? 0}</strong> · BareSkin:{" "}
+              <strong>
+                {graspAnalysis?.objectEnsemble?.bareHandConfirmed ||
+                graspAnalysis?.objectEnsemble?.isCanonicalBareFist
+                  ? "YES"
+                  : "NO"}
+              </strong>
+            </div>
+          )}
           {intentEnsemble && (
             <div className="text-[10px] font-mono text-slate-400">
               Ensemble B (Intent):{" "}
