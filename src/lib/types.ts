@@ -62,6 +62,8 @@ export interface HandParameters {
   handDistanceEstimate?: number;
   /** v5.0 Signed Palmar Thumb-Tuck Coordinate: <= 0 when thumb is outside index MCP (OPEN_PALM), >= 0.24 when tucked across palm (FOUR_FINGERS) */
   thumbPalmarTuckRatio?: number;
+  /** v5.0 Signed perpendicular cross-product distance from Index MCP (5) to Thumb Tip (4) relative to palm across-axis */
+  thumbTipToIndexMcpCrossDist?: number;
   /** v5.0 Normalized thumb-IP (3) to index-PIP (6) teardrop eyelet arch spread */
   pinchEyeletSpread?: number;
   /** v5.0 True when dual-manifold teardrop pinch eyelet invariant is satisfied */

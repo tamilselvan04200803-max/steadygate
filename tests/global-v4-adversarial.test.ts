@@ -1052,7 +1052,59 @@ async function runGlobalV4Suite() {
       previousGesture: "PINCH",
     });
 
-    // 3. Phase 3: 16-Ray Boundary-Crossing Scanner + ObjectCarryStateTracker
+    // 2b. 30 Tilt/Rotation Variations across both Trefoil (OK) Pinch and Closed Precision Pinch (n=60)
+    const rotatePose = (lm: HandLandmark2D[], deg: number): HandLandmark2D[] => {
+      const rad = (deg * Math.PI) / 180;
+      const cosA = Math.cos(rad);
+      const sinA = Math.sin(rad);
+      const cx = lm[0].x;
+      const cy = lm[0].y;
+      return lm.map((p) => ({
+        x: cx + (p.x - cx) * cosA - (p.y - cy) * sinA,
+        y: cy + (p.x - cx) * sinA + (p.y - cy) * cosA,
+        z: p.z,
+      }));
+    };
+    let pinchPassCount = 0;
+    for (let k = 0; k < 30; k++) {
+      const deg = -22 + (44 * k) / 29;
+      const rOk = classifyHandGesture(rotatePose(okPinch, deg), null, { webcamMode: true });
+      const rClosed = classifyHandGesture(rotatePose(closedPinch, deg), null, { webcamMode: true });
+      if (rOk.gesture === "PINCH" && rOk.confidence >= 0.9 && rOk.margin >= 0.4) pinchPassCount++;
+      if (rClosed.gesture === "PINCH" && rClosed.confidence >= 0.9 && rClosed.margin >= 0.4)
+        pinchPassCount++;
+    }
+
+    // 3. Phase 3: 16-Ray Boundary-Crossing Scanner + ObjectCarryStateTracker + S_object Verification
+    const ensC1 = evaluateObjectPresenceEnsemble(
+      REAL_WORLD_FAILURE_CASES.CASE_1_PHONE_IN_HAND,
+      undefined,
+      { webcamMode: true }
+    );
+    const ensC4 = evaluateObjectPresenceEnsemble(
+      REAL_WORLD_FAILURE_CASES.CASE_4_BOOK_COVER_SIDE_CLAMP,
+      undefined,
+      { webcamMode: true }
+    );
+    const ensC5 = evaluateObjectPresenceEnsemble(
+      REAL_WORLD_FAILURE_CASES.CASE_5_BOOK_SPINE_EDGE_HOLD,
+      undefined,
+      { webcamMode: true }
+    );
+    const ensOpenBook = evaluateObjectPresenceEnsemble(
+      generateObjectGraspLandmarks("OPEN_BOOK", 0)
+    );
+    const ensCupMug = evaluateObjectPresenceEnsemble(generateObjectGraspLandmarks("CUP_MUG", 0));
+    const ensBareFist = evaluateObjectPresenceEnsemble(
+      REAL_WORLD_FAILURE_CASES.CASE_6_BARE_FIST_195931,
+      undefined,
+      { webcamMode: true }
+    );
+    const ensBarePinch = evaluateObjectPresenceEnsemble(okPinch, undefined, { webcamMode: true });
+    const ensBareOpen = evaluateObjectPresenceEnsemble(openRelaxed, undefined, {
+      webcamMode: true,
+    });
+
     const analyzer = new SceneAnalyzer();
     const skinFrame = new Uint8ClampedArray(64 * 48 * 4);
     for (let i = 0; i < 64 * 48; i++) {
@@ -1117,13 +1169,22 @@ async function runGlobalV4Suite() {
         resOkPinch.confidence >= 0.9 &&
         resOkPinch.margin >= 0.45 &&
         resHysteresisPinch.gesture === "PINCH" &&
+        pinchPassCount === 60 &&
+        ensC1.ensembleScore >= 0.6 &&
+        ensC4.ensembleScore >= 0.6 &&
+        ensC5.ensembleScore >= 0.6 &&
+        ensOpenBook.ensembleScore >= 0.6 &&
+        ensCupMug.ensembleScore >= 0.6 &&
+        ensBareFist.ensembleScore === 0 &&
+        ensBarePinch.ensembleScore === 0 &&
+        ensBareOpen.ensembleScore === 0 &&
         bareScan.bareHandConfirmed === true &&
         bareScan.protrusionScore === 0 &&
         latchedAfter3 === true &&
         maintainedOnRotation === true &&
         releasedOnOpenPalm === false,
-      "G9.11 SteadyGate v5.0: 0% OPEN_PALM/FOUR_FINGERS confusion, 100% Dual-Manifold PINCH (Trefoil + Closed Precision + Hysteresis), and 16-Ray Boundary Scanner + Carry Latch verified",
-      `openRelaxed=${resOpenRelaxed.gesture}(${resOpenRelaxed.confidence}, margin=${resOpenRelaxed.margin}), four=${resFourGenuine.gesture}(${resFourGenuine.confidence}), closedPinch=${resClosedPinch.gesture}(${resClosedPinch.confidence}, margin=${resClosedPinch.margin}), okPinch=${resOkPinch.gesture}(${resOkPinch.confidence}), bareConfirmed=${bareScan.bareHandConfirmed}, carryLatch=${latchedAfter3}->${maintainedOnRotation}->${releasedOnOpenPalm}`
+      "G9.11 SteadyGate v5.0: 0% OPEN_PALM/FOUR_FINGERS confusion, 100% Dual-Manifold PINCH (60/60 tilt sweep), S_object >= 0.60 on all 5 object holds & 0.0 on bare hands, and 16-Ray Scanner + Carry Latch verified",
+      `openRelaxed=${resOpenRelaxed.gesture}(${resOpenRelaxed.confidence}), four=${resFourGenuine.gesture}(${resFourGenuine.confidence}), pinchSweep=${pinchPassCount}/60, S_obj=[C1:${ensC1.ensembleScore}, C4:${ensC4.ensembleScore}, C5:${ensC5.ensembleScore}, OpenBook:${ensOpenBook.ensembleScore}, Mug:${ensCupMug.ensembleScore}, Bare:${ensBareFist.ensembleScore}/${ensBarePinch.ensembleScore}/${ensBareOpen.ensembleScore}]`
     );
   }
 

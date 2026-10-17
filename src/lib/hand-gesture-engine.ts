@@ -484,9 +484,10 @@ export function extractHandParameters(
   const vAcrossY = pinkyMcp.y - indexMcp.y;
   const vThumbX = thumbTip.x - indexMcp.x;
   const vThumbY = thumbTip.y - indexMcp.y;
-  const thumbPalmarTuckRatio =
-    (vThumbX * vAcrossX + vThumbY * vAcrossY) /
-    Math.max(vAcrossX * vAcrossX + vAcrossY * vAcrossY, 1e-6);
+  const acrossLenSq = Math.max(vAcrossX * vAcrossX + vAcrossY * vAcrossY, 1e-6);
+  const thumbPalmarTuckRatio = (vThumbX * vAcrossX + vThumbY * vAcrossY) / acrossLenSq;
+  const thumbTipToIndexMcpCrossDist =
+    (vThumbX * vAcrossY - vThumbY * vAcrossX) / Math.sqrt(acrossLenSq);
 
   if (
     thumbPalmarTuckRatio <= -0.18 &&
@@ -568,6 +569,7 @@ export function extractHandParameters(
     normalHandSize: Math.round(palmLength * 1000) / 1000,
     handDistanceEstimate: Math.round((1.0 / Math.max(0.05, palmLength)) * 100) / 100,
     thumbPalmarTuckRatio: Math.round(thumbPalmarTuckRatio * 1000) / 1000,
+    thumbTipToIndexMcpCrossDist: Math.round(thumbTipToIndexMcpCrossDist * 1000) / 1000,
     pinchEyeletSpread: Math.round(pinchEyeletSpread * 1000) / 1000,
     isCanonicalPinchEyelet,
   };
@@ -633,10 +635,22 @@ export function evaluateObjectPresenceEnsemble(
   const params = handParams || extractHandParameters(landmarks);
   const feat = extractFrameStructuralFeatures(landmarks, params);
   const bareFist = isStructuralBareFist(feat, options);
-  const bareHandConfirmed = Boolean(options?.bareHandConfirmed || bareFist);
+  const visualOcc =
+    options?.apertureOccupancyRatio !== undefined
+      ? options.apertureOccupancyRatio
+      : options?.foreignObjectDetected
+      ? 0.85
+      : 0;
+  const barePinchOrOpen =
+    !options?.foreignObjectDetected &&
+    visualOcc < 0.38 &&
+    (Boolean(params.isCanonicalPinchEyelet) || feat.fourMean >= 0.72);
+  const bareHandConfirmed = Boolean(
+    options?.bareHandConfirmed || bareFist || barePinchOrOpen
+  );
   const protrusionScore = Math.round(clamp01(options?.protrusionScore ?? 0) * 100) / 100;
 
-  if (options?.bareHandConfirmed && bareFist) {
+  if ((options?.bareHandConfirmed && bareFist) || bareFist || barePinchOrOpen) {
     return {
       signalA1_SkinDivergence: 0,
       signalA2_GapObstruction: 0,
@@ -645,7 +659,7 @@ export function evaluateObjectPresenceEnsemble(
       signalA5_ClampRigidity: 0,
       ensembleScore: 0,
       activeSignalCount: 0,
-      isCanonicalBareFist: true,
+      isCanonicalBareFist: bareFist,
       confirmedObjectInHand: false,
       protrusionScore: 0,
       bareHandConfirmed: true,
@@ -664,12 +678,18 @@ export function evaluateObjectPresenceEnsemble(
   const d4_10 = dist(landmarks[4], landmarks[10]) / palmLen;
   const d4_14 = dist(landmarks[4], landmarks[14]) / palmLen;
 
-  const visualOcc =
-    options?.apertureOccupancyRatio !== undefined
-      ? options.apertureOccupancyRatio
-      : options?.foreignObjectDetected
-      ? 0.85
-      : 0;
+  const isWidePhoneClamp =
+    idx >= 0.5 && Math.max(mid, rng, pnk) < 0.45 && d4_5 > 0.72 && d4_10 > 1.1 && d4_14 > 1.1;
+  const isSpineWideHook =
+    feat.verticalKnuckleStack &&
+    feat.meanMcpDeg >= 134 &&
+    feat.d4_17 >= 1.06 &&
+    feat.d4_9 >= 0.49;
+  const isSideBookCoverClamp =
+    feat.verticalKnuckleStack &&
+    (feat.horizTipCount >= 3 || feat.horizPipCount >= 3) &&
+    feat.meanPip4Deg >= 120 &&
+    feat.d4_9 >= 0.52;
 
   // Signal A1 (weight 0.30): Interior Palm vs. Knuckle Self-Skin YCbCr Divergence
   let signalA1 = 0;
@@ -686,20 +706,13 @@ export function evaluateObjectPresenceEnsemble(
   // Signal A2 (weight 0.25): Physical Gap & Wide-Clamp Biomechanical Obstruction
   let signalA2 = 0;
   if (!bareFist) {
-    const isWidePhoneClamp =
-      idx >= 0.5 && Math.max(mid, rng, pnk) < 0.45 && d4_5 > 0.72 && d4_10 > 1.1 && d4_14 > 1.1;
-    const isSpineWideHook =
-      feat.verticalKnuckleStack &&
-      feat.meanMcpDeg >= 134 &&
-      feat.d4_17 >= 1.06 &&
-      feat.d4_9 >= 0.49;
     const isCylindricalGap =
       feat.tipToMcpMean > 0.52 &&
       pinchNorm >= 0.42 &&
       pinchNorm <= 1.15 &&
       fourMean >= 0.16 &&
       fourMax < 0.56;
-    if (isWidePhoneClamp || isSpineWideHook) {
+    if (isWidePhoneClamp || isSpineWideHook || isSideBookCoverClamp) {
       signalA2 = 1.0;
     } else if (isCylindricalGap) {
       signalA2 = 0.85;
@@ -716,9 +729,12 @@ export function evaluateObjectPresenceEnsemble(
     } else if (protrusionScore > 0) {
       signalA3 = protrusionScore;
     } else if (
-      feat.verticalKnuckleStack &&
-      (feat.horizTipCount >= 3 || feat.horizPipCount >= 3) &&
-      (feat.meanPip4Deg >= 120 || (feat.meanMcpDeg >= 134 && feat.d4_17 >= 1.06))
+      isWidePhoneClamp ||
+      isSideBookCoverClamp ||
+      isSpineWideHook ||
+      (feat.verticalKnuckleStack &&
+        (feat.horizTipCount >= 3 || feat.horizPipCount >= 3) &&
+        (feat.meanPip4Deg >= 120 || (feat.meanMcpDeg >= 134 && feat.d4_17 >= 1.06)))
     ) {
       signalA3 = 0.85;
     } else if (!options?.webcamMode && fourMean >= 0.16 && fourMean <= 0.58 && pinchNorm > 0.24) {
@@ -730,6 +746,8 @@ export function evaluateObjectPresenceEnsemble(
   let signalA4 = 0;
   if (!bareFist) {
     if (
+      isWidePhoneClamp ||
+      isSideBookCoverClamp ||
       (feat.meanMcpDeg <= 132 && feat.meanPip4Deg >= 120 && fourMean >= 0.22) ||
       (feat.verticalKnuckleStack &&
         feat.meanMcpDeg >= 134 &&
@@ -756,6 +774,8 @@ export function evaluateObjectPresenceEnsemble(
     const meanD = (d1 + d2 + d3) / 3;
     const stdD = Math.sqrt(((d1 - meanD) ** 2 + (d2 - meanD) ** 2 + (d3 - meanD) ** 2) / 3);
     if (
+      isWidePhoneClamp ||
+      isSideBookCoverClamp ||
       (fourMean >= 0.16 && fourMean <= 0.58 && fourMax - fourMin < 0.24 && stdD < 0.055) ||
       (feat.verticalKnuckleStack && (feat.horizPipCount >= 3 || feat.horizTipCount >= 3))
     ) {
