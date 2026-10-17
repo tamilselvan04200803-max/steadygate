@@ -121,13 +121,49 @@ export interface ObjectPresenceEnsembleMetrics {
   carryingObjectLatched?: boolean;
 }
 
+export type HandContactState100DOH =
+  | "NO_CONTACT"
+  | "SELF_CONTACT"
+  | "OTHER_PERSON_CONTACT"
+  | "PORTABLE_OBJECT_CONTACT"
+  | "STATIONARY_OBJECT_CONTACT";
+
+export interface HandContactTaxonomyResult {
+  state: HandContactState100DOH;
+  probabilities: Record<HandContactState100DOH, number>;
+  eligibleForActuation: boolean;
+  carryStage: "FREE_HAND" | "FIRST_CONTACT" | "CARRYING_OBJECT" | "DE_CONTACT";
+  diagnosticReason: ObjectGraspRejectionReason;
+  objectEnsembleScore: number;
+}
+
+export type HazardTier =
+  | "T0_REVERSIBLE"
+  | "T1_CONTINUOUS"
+  | "T2_HIGH_ENERGY"
+  | "TX_PROHIBITED";
+
+export interface MondrianConformalResult {
+  predictionSet: RecognizedGesture[];
+  setSize: number;
+  isSingleton: boolean;
+  isAbstaining: boolean;
+  topClass: RecognizedGesture;
+  topProbability: number;
+  thresholdQuantile: number;
+}
+
 export type IntentionalityStatus =
   | "INTENTIONAL_READY"
   | "CHIN_REST_OR_FACE_TOUCH_IGNORED"
   | "CONVERSATIONAL_MOTION_IGNORED"
   | "OUT_OF_CORRIDOR_OR_RESTING_HAND"
   | "HOLD_PAUSED_LOOKING_AWAY"
-  | "WAKE_WINDOW_STANDBY";
+  | "WAKE_WINDOW_STANDBY"
+  | "SAFE_IDLE_LOW_SQI"
+  | "CONFORMAL_ABSTAIN_PAUSE"
+  | "CONTACT_VETO_BLOCKED"
+  | "TX_THERMAL_HAZARD_PROHIBITED";
 
 export interface IntentionalityEnsembleMetrics {
   /** S_B1 [0..1]: 1.0 when hand is free of face/nose/chin-rest contact halo, 0.0 when resting on chin or touching face */
@@ -154,6 +190,28 @@ export interface IntentionalityEnsembleMetrics {
   flexionDriftStd: number;
   /** True when chin-rest or perioral proximity was detected */
   chinRestDetected: boolean;
+  /** v6.0 Stage 3B 6-Layer (L(-1)..L5) + SPRT + Mondrian Conformal Diagnostics */
+  sqiScore?: number;
+  sqiSafeIdleActive?: boolean;
+  layerScores?: {
+    lMinus1Sqi: number;
+    l0FrustumDepthWake: number;
+    l1GazeAttention: number;
+    l2BallisticHold: number;
+    l3PostureStability: number;
+    l4ContactVetoFree: number;
+    l5ConformalSprt: number;
+  };
+  sprtLogLikelihoodAccum?: number;
+  sprtCommitted?: boolean;
+  conformalPredictionSet?: RecognizedGesture[];
+  conformalSetSize?: number;
+  contactState100DOH?: HandContactState100DOH;
+  headTitubationAdapted?: boolean;
+  effectiveL1Weight?: number;
+  effectiveHeadConeDeg?: number;
+  hazardTier?: HazardTier;
+  hazardBlockedReason?: string | null;
 }
 
 export interface ExtractedFrameTelemetry {

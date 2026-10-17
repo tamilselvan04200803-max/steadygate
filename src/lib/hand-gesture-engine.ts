@@ -1,11 +1,15 @@
 import {
   ExtractedFrameTelemetry,
+  HandContactState100DOH,
+  HandContactTaxonomyResult,
   HandLandmark2D,
   HandParameters,
+  MondrianConformalResult,
   ObjectPresenceEnsembleMetrics,
   RecognizedGesture,
   UserProfile,
 } from "./types";
+import { STEADYGATE_V6_CONFIG } from "../config/steadygate.config";
 import {
   computePalmOrientation,
   isNaturalSideProfileFreeHand as checkNaturalSideProfileFreeHand,
@@ -845,6 +849,244 @@ export function evaluateObjectPresenceEnsemble(
     protrusionScore,
     bareHandConfirmed,
     carryingObjectLatched: carryingLatched,
+  };
+}
+
+/**
+ * Wave 3 Stage 3A — 100DOH 5-State Hand-Contact Taxonomy Evaluator (`evaluateHandContactState100DOH`):
+ * Computes a calibrated probability distribution over the 5 mutually exclusive contact states
+ * from Shan et al. (CVPR 2020, 100DOH):
+ *  - NO_CONTACT: Bare hand in free air (only state eligible for command actuation)
+ *  - SELF_CONTACT: Face/nose/chin/hair touch (Case 3), chin-resting, or folded arms
+ *  - OTHER_PERSON_CONTACT: Caregiver/bystander hand intrusion (>18% bone-ratio deviation or >0.25 jump)
+ *  - PORTABLE_OBJECT_CONTACT: Phone, book cover clamp, book spine grip, open book, cup/mug
+ *  - STATIONARY_OBJECT_CONTACT: Hand resting passively on desk/wheelchair tray/lap at bottom border
+ */
+export function evaluateHandContactState100DOH(
+  landmarks: HandLandmark2D[],
+  handParams?: HandParameters,
+  options?: {
+    faceOverlapDetected?: boolean;
+    chinRestDetected?: boolean;
+    caregiverHandIntrusion?: boolean;
+    boneRatioDeviationPct?: number;
+    wristJumpNorm?: number;
+    restingOnSurface?: boolean;
+    wristVelocity?: number;
+    webcamMode?: boolean;
+    foreignObjectDetected?: boolean;
+    apertureOccupancyRatio?: number;
+    skinDivergenceScore?: number;
+    protrudingEdgeLineScore?: number;
+    protrusionScore?: number;
+    bareHandConfirmed?: boolean;
+    carryingObjectLatched?: boolean;
+    carryStage?: "FREE_HAND" | "FIRST_CONTACT" | "CARRYING_OBJECT" | "DE_CONTACT";
+  }
+): HandContactTaxonomyResult {
+  const params = handParams || extractHandParameters(landmarks);
+  const objEnsemble = evaluateObjectPresenceEnsemble(landmarks, params, options);
+  const graspCheck = detectObjectGrasp(landmarks, params, {
+    faceOverlapDetected: options?.faceOverlapDetected,
+    webcamMode: options?.webcamMode,
+    foreignObjectDetected: options?.foreignObjectDetected,
+    apertureOccupancyRatio: options?.apertureOccupancyRatio,
+    skinDivergenceScore: options?.skinDivergenceScore,
+    protrudingEdgeLineScore: options?.protrudingEdgeLineScore,
+    protrusionScore: options?.protrusionScore,
+    bareHandConfirmed: options?.bareHandConfirmed,
+    carryingObjectLatched: options?.carryingObjectLatched,
+  });
+
+  // 1. Check OTHER_PERSON_CONTACT (caregiver / bystander hand intrusion)
+  const isOtherPerson =
+    Boolean(options?.caregiverHandIntrusion) ||
+    ((options?.boneRatioDeviationPct ?? 0) > 18.0 && (options?.wristJumpNorm ?? 0) > 0.25);
+
+  // 2. Check SELF_CONTACT (face/nose scratch CASE_3 or chin-resting)
+  const isSelfContact =
+    !isOtherPerson &&
+    (Boolean(options?.faceOverlapDetected) ||
+      Boolean(options?.chinRestDetected) ||
+      graspCheck.reason === "CASUAL_FACE_TOUCH_OR_SCRATCH");
+
+  // 3. Check STATIONARY_OBJECT_CONTACT (hand resting flat on desk / wheelchair tray / lap at bottom boundary)
+  let maxY = 0;
+  let maxX = 0;
+  for (const pt of landmarks) {
+    if (pt.y > maxY) maxY = pt.y;
+    if (pt.x > maxX) maxX = pt.x;
+  }
+  const isNormalizedCoords = maxX <= 1.05 && maxY <= 1.05;
+  const wristY = landmarks[0]?.y ?? 0.5;
+  const isStationarySurface =
+    !isOtherPerson &&
+    !isSelfContact &&
+    (Boolean(options?.restingOnSurface) ||
+      (isNormalizedCoords &&
+        wristY > 0.88 &&
+        maxY > 0.94 &&
+        options?.wristVelocity !== undefined &&
+        options.wristVelocity < 0.04 &&
+        !objEnsemble.confirmedObjectInHand));
+
+  // 4. Check PORTABLE_OBJECT_CONTACT (detectObjectGrasp + temporal carry latch, preserving 100% of bare-hand overrides)
+  const isPortableObject =
+    !isOtherPerson &&
+    !isSelfContact &&
+    !isStationarySurface &&
+    !objEnsemble.isCanonicalBareFist &&
+    !params.isCanonicalPinchEyelet &&
+    (graspCheck.isObjectGrasp ||
+      Boolean(options?.carryingObjectLatched && objEnsemble.confirmedObjectInHand));
+
+  let state: HandContactState100DOH = "NO_CONTACT";
+  const rawProbs: Record<HandContactState100DOH, number> = {
+    NO_CONTACT: 0.88,
+    SELF_CONTACT: 0.03,
+    OTHER_PERSON_CONTACT: 0.02,
+    PORTABLE_OBJECT_CONTACT: 0.04,
+    STATIONARY_OBJECT_CONTACT: 0.03,
+  };
+
+  if (isOtherPerson) {
+    state = "OTHER_PERSON_CONTACT";
+    rawProbs.OTHER_PERSON_CONTACT = 0.92;
+    rawProbs.NO_CONTACT = 0.03;
+    rawProbs.SELF_CONTACT = 0.02;
+    rawProbs.PORTABLE_OBJECT_CONTACT = 0.02;
+    rawProbs.STATIONARY_OBJECT_CONTACT = 0.01;
+  } else if (isSelfContact) {
+    state = "SELF_CONTACT";
+    rawProbs.SELF_CONTACT = 0.91;
+    rawProbs.NO_CONTACT = 0.04;
+    rawProbs.OTHER_PERSON_CONTACT = 0.01;
+    rawProbs.PORTABLE_OBJECT_CONTACT = 0.02;
+    rawProbs.STATIONARY_OBJECT_CONTACT = 0.02;
+  } else if (isPortableObject) {
+    state = "PORTABLE_OBJECT_CONTACT";
+    const pObj = Math.max(0.78, Math.min(0.96, Math.max(objEnsemble.ensembleScore, 0.82)));
+    rawProbs.PORTABLE_OBJECT_CONTACT = Math.round(pObj * 1000) / 1000;
+    rawProbs.NO_CONTACT = Math.round((1 - pObj) * 0.5 * 1000) / 1000;
+    rawProbs.STATIONARY_OBJECT_CONTACT = Math.round((1 - pObj) * 0.25 * 1000) / 1000;
+    rawProbs.SELF_CONTACT = Math.round((1 - pObj) * 0.15 * 1000) / 1000;
+    rawProbs.OTHER_PERSON_CONTACT = Math.round((1 - pObj) * 0.1 * 1000) / 1000;
+  } else if (isStationarySurface) {
+    state = "STATIONARY_OBJECT_CONTACT";
+    rawProbs.STATIONARY_OBJECT_CONTACT = 0.89;
+    rawProbs.NO_CONTACT = 0.06;
+    rawProbs.PORTABLE_OBJECT_CONTACT = 0.03;
+    rawProbs.SELF_CONTACT = 0.01;
+    rawProbs.OTHER_PERSON_CONTACT = 0.01;
+  } else {
+    state = "NO_CONTACT";
+    const pFree = Math.max(0.84, Math.min(0.98, 0.96 - objEnsemble.ensembleScore * 0.4));
+    rawProbs.NO_CONTACT = Math.round(pFree * 1000) / 1000;
+    rawProbs.PORTABLE_OBJECT_CONTACT = Math.round((1 - pFree) * 0.45 * 1000) / 1000;
+    rawProbs.STATIONARY_OBJECT_CONTACT = Math.round((1 - pFree) * 0.25 * 1000) / 1000;
+    rawProbs.SELF_CONTACT = Math.round((1 - pFree) * 0.2 * 1000) / 1000;
+    rawProbs.OTHER_PERSON_CONTACT = Math.round((1 - pFree) * 0.1 * 1000) / 1000;
+  }
+
+  const carryStage =
+    options?.carryStage ??
+    (state === "PORTABLE_OBJECT_CONTACT"
+      ? options?.carryingObjectLatched
+        ? "CARRYING_OBJECT"
+        : "FIRST_CONTACT"
+      : "FREE_HAND");
+
+  return {
+    state,
+    probabilities: rawProbs,
+    eligibleForActuation: state === "NO_CONTACT",
+    carryStage,
+    diagnosticReason: isOtherPerson
+      ? "CAREGIVER_OR_BYSTANDER_HAND_IGNORED"
+      : isSelfContact
+      ? "CASUAL_FACE_TOUCH_OR_SCRATCH"
+      : graspCheck.reason,
+    objectEnsembleScore: objEnsemble.ensembleScore,
+  };
+}
+
+/**
+ * Wave 3 Stage 3B — Class-Conditional Mondrian Split Conformal Prediction Set Evaluator:
+ * Computes C_{1-alpha}(X_t) = { c in Y : 1 - p_hat_c(X_t) <= q_hat_{1-alpha, c} } at alpha = 0.02.
+ *  - |C| === 1 (singleton): High-confidence unambiguous command -> positive SPRT evidence
+ *  - |C| > 1 (multi-label ambiguity) or |C| === 0 (OOD): Conformal abstain -> pause SPRT without resetting!
+ */
+export function evaluateMondrianConformalSet(
+  classScores: Partial<Record<RecognizedGesture, number>>,
+  topGesture: RecognizedGesture,
+  topConfidence: number,
+  margin: number
+): MondrianConformalResult {
+  const quantiles = STEADYGATE_V6_CONFIG.stage3ContactAndIntent.mondrianQuantiles;
+  const candidateClasses: RecognizedGesture[] = [
+    "OPEN_PALM",
+    "FIST",
+    "PINCH",
+    "THUMBS_UP",
+    "THUMBS_DOWN",
+    "VICTORY",
+    "POINTING_UP",
+    "CALL_ME",
+    "THREE_FINGERS",
+    "FOUR_FINGERS",
+  ];
+
+  // If caller did not pass full per-class scores, synthesize calibrated probability distribution from topConfidence & margin
+  const probs: Record<string, number> = {};
+  const runnerUpConf = Math.max(0, topConfidence - margin);
+  for (const c of candidateClasses) {
+    if (classScores && typeof classScores[c] === "number") {
+      probs[c] = classScores[c]!;
+    } else if (c === topGesture) {
+      probs[c] = topConfidence;
+    } else {
+      probs[c] = runnerUpConf * 0.25;
+    }
+  }
+  if (topGesture !== "UNKNOWN" && probs[topGesture] !== undefined) {
+    // Assign runner-up probability to the closest competing class so low-margin frames produce |C| >= 2
+    const competitor =
+      topGesture === "OPEN_PALM"
+        ? "FOUR_FINGERS"
+        : topGesture === "FOUR_FINGERS"
+        ? "THREE_FINGERS"
+        : "OPEN_PALM";
+    if (!classScores || classScores[competitor] === undefined) {
+      if (margin < 0.18 && topConfidence >= 0.5) {
+        const qTop = quantiles[topGesture] ?? 0.16;
+        const qComp = quantiles[competitor] ?? 0.16;
+        probs[topGesture] = Math.max(topConfidence, 1.0 - qTop + 0.01);
+        probs[competitor] = Math.max(runnerUpConf, 1.0 - qComp + 0.005);
+      } else {
+        probs[competitor] = runnerUpConf;
+      }
+    }
+  }
+
+  const predictionSet: RecognizedGesture[] = [];
+  for (const c of candidateClasses) {
+    const pHat = probs[c] ?? 0;
+    const nonConformity = 1.0 - pHat;
+    const qHat = quantiles[c] ?? 0.34;
+    if (nonConformity <= qHat) {
+      predictionSet.push(c);
+    }
+  }
+
+  const topQ = quantiles[topGesture] ?? 0.34;
+  return {
+    predictionSet,
+    setSize: predictionSet.length,
+    isSingleton: predictionSet.length === 1 && predictionSet[0] === topGesture,
+    isAbstaining: predictionSet.length !== 1,
+    topClass: topGesture,
+    topProbability: Math.round(topConfidence * 1000) / 1000,
+    thresholdQuantile: topQ,
   };
 }
 

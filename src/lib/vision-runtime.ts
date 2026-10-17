@@ -2179,19 +2179,28 @@ export class IntentTracker {
 
 export class ObjectCarryStateTracker {
   private consecutiveObjectFrames = 0;
+  private deContactFrames = 0;
   private latched = false;
+  private stage: "FREE_HAND" | "FIRST_CONTACT" | "CARRYING_OBJECT" | "DE_CONTACT" = "FREE_HAND";
 
   reset(): void {
     this.consecutiveObjectFrames = 0;
+    this.deContactFrames = 0;
     this.latched = false;
+    this.stage = "FREE_HAND";
   }
 
   isLatched(): boolean {
     return this.latched;
   }
 
+  getStage(): "FREE_HAND" | "FIRST_CONTACT" | "CARRYING_OBJECT" | "DE_CONTACT" {
+    return this.stage;
+  }
+
   /**
-   * Updates the temporal object-carry latch.
+   * Updates the temporal 100DOH object-carry state machine:
+   * FREE_HAND -> FIRST_CONTACT -> CARRYING_OBJECT -> DE_CONTACT -> FREE_HAND.
    * Latches `carryingObjectActive = true` when `ensembleScore >= 0.58` (or `confirmedObjectInHand`)
    * for >= 3 consecutive frames. Releases only when the user opens their fingers (`fourMean >= 0.58`),
    * confirms a bare-skin fist (`bareHandConfirmed && isCanonicalBareFist`), or confirms a bare pinch.
@@ -2210,17 +2219,27 @@ export class ObjectCarryStateTracker {
       (input.isCanonicalPinchEyelet && input.bareHandConfirmed)
     ) {
       this.consecutiveObjectFrames = 0;
+      this.deContactFrames = 0;
       this.latched = false;
+      this.stage = "FREE_HAND";
       return false;
     }
 
     if (input.confirmedObjectInHand || input.ensembleScore >= 0.58) {
+      this.deContactFrames = 0;
       this.consecutiveObjectFrames += 1;
       if (this.consecutiveObjectFrames >= 3) {
         this.latched = true;
+        this.stage = "CARRYING_OBJECT";
+      } else {
+        this.stage = "FIRST_CONTACT";
       }
     } else if (!this.latched) {
       this.consecutiveObjectFrames = Math.max(0, this.consecutiveObjectFrames - 1);
+      this.stage = this.consecutiveObjectFrames > 0 ? "FIRST_CONTACT" : "FREE_HAND";
+    } else {
+      this.deContactFrames += 1;
+      this.stage = "DE_CONTACT";
     }
 
     return this.latched;
