@@ -1,9 +1,10 @@
-import type { RecognizedGesture } from "../types";
+import type { HazardTier, RecognizedGesture } from "../types";
 import type {
   ChordStage,
   SafetyChordState,
   SafetyRiskTier,
 } from "../../../.swarm/contracts/types";
+import { STEADYGATE_V6_CONFIG } from "../../config/steadygate.config";
 
 /**
  * Subagent S9 — Unified TypeScript Policy & 3-Tier Safety Chord Engine
@@ -352,3 +353,147 @@ export class SafetyChordEngine {
     };
   }
 }
+
+/* ========================================================================== */
+/* SteadyGate v6.0 — Stage 5: 5-Second Cancellable Undo Window,               */
+/* Dead-Man Watchdog & Hazard-Tier Rate Limiter                               */
+/* ========================================================================== */
+
+export interface CommittedActuationSnapshot {
+  deviceId: string;
+  previousState: "ON" | "OFF";
+  newState: "ON" | "OFF";
+  previousTargetValue: number;
+  newTargetValue: number;
+  committedAtMs: number;
+  expiresAtMs: number;
+  undone: boolean;
+}
+
+export class UndoableActuationController {
+  private lastCommitByDevice = new Map<string, CommittedActuationSnapshot>();
+  private lastActuationTsByDevice = new Map<string, number>();
+
+  reset(): void {
+    this.lastCommitByDevice.clear();
+    this.lastActuationTsByDevice.clear();
+  }
+
+  /**
+   * Checks per-appliance rate limits (3.0s for T0/T1, 10.0s for T2) and Dead-Man Watchdog
+   * (aborts if tracking gap > 600ms or SQI < 0.35).
+   * Note: OFF commands are always permitted immediately without rate-limit blocking!
+   */
+  checkDefenseInDepthInterlocks(input: {
+    deviceId: string;
+    hazardTier: HazardTier;
+    commandDirection: "ON" | "OFF" | "ADJUST";
+    nowMs: number;
+    trackingGapMs?: number;
+    sqiScore?: number;
+  }): {
+    allowed: boolean;
+    reason: string;
+  } {
+    const watchdogMaxMs = STEADYGATE_V6_CONFIG.stage5Actuation.watchdogTimeoutMs.value;
+    if ((input.trackingGapMs ?? 0) > watchdogMaxMs) {
+      return { allowed: false, reason: "DEAD_MAN_WATCHDOG_TRACKING_LOST" };
+    }
+    if (
+      input.sqiScore !== undefined &&
+      input.sqiScore < STEADYGATE_V6_CONFIG.stage3ContactAndIntent.sqiSafeIdleThreshold.value
+    ) {
+      return { allowed: false, reason: "DEAD_MAN_WATCHDOG_LOW_SQI" };
+    }
+
+    if (input.hazardTier === "TX_PROHIBITED" && input.commandDirection === "ON") {
+      return { allowed: false, reason: "TX_UNATTENDED_THERMAL_IGNITION_PROHIBITED" };
+    }
+
+    // Emergency OFF is always allowed immediately without cooldown blocking
+    if (input.commandDirection === "OFF") {
+      return { allowed: true, reason: "EMERGENCY_OFF_ALWAYS_PERMITTED" };
+    }
+
+    const lastTs = this.lastActuationTsByDevice.get(input.deviceId);
+    const minCooldownMs = input.hazardTier === "T2_HIGH_ENERGY" ? 10000 : 3000;
+    if (lastTs !== undefined && input.nowMs - lastTs < minCooldownMs) {
+      return { allowed: false, reason: "RATE_LIMIT_COOLDOWN_ACTIVE" };
+    }
+
+    return { allowed: true, reason: "INTERLOCKS_VERIFIED" };
+  }
+
+  recordCommittedActuation(input: {
+    deviceId: string;
+    previousState: "ON" | "OFF";
+    newState: "ON" | "OFF";
+    previousTargetValue: number;
+    newTargetValue: number;
+    nowMs: number;
+  }): CommittedActuationSnapshot {
+    const undoWindowMs = STEADYGATE_V6_CONFIG.stage5Actuation.undoWindowDurationMs.value;
+    const snap: CommittedActuationSnapshot = {
+      deviceId: input.deviceId,
+      previousState: input.previousState,
+      newState: input.newState,
+      previousTargetValue: Math.round(input.previousTargetValue),
+      newTargetValue: Math.round(input.newTargetValue),
+      committedAtMs: input.nowMs,
+      expiresAtMs: input.nowMs + undoWindowMs,
+      undone: false,
+    };
+    this.lastCommitByDevice.set(input.deviceId, snap);
+    this.lastActuationTsByDevice.set(input.deviceId, input.nowMs);
+    return snap;
+  }
+
+  /**
+   * Evaluates whether a 5-second Undo gesture (OPEN_PALM or THUMBS_DOWN) or UI Undo click
+   * reverts the most recent committed actuation back to its pre-commit state.
+   */
+  tryUndoRecentActuation(input: {
+    deviceId: string;
+    nowMs: number;
+    gesture?: RecognizedGesture;
+    explicitUiUndo?: boolean;
+  }): {
+    undoTriggered: boolean;
+    restoredState: "ON" | "OFF" | null;
+    restoredTargetValue: number | null;
+    remainingUndoWindowMs: number;
+  } {
+    const snap = this.lastCommitByDevice.get(input.deviceId);
+    if (!snap || snap.undone || input.nowMs > snap.expiresAtMs) {
+      return {
+        undoTriggered: false,
+        restoredState: null,
+        restoredTargetValue: null,
+        remainingUndoWindowMs: 0,
+      };
+    }
+
+    const isUndoGesture =
+      Boolean(input.explicitUiUndo) ||
+      input.gesture === "OPEN_PALM" ||
+      input.gesture === "THUMBS_DOWN";
+
+    if (!isUndoGesture) {
+      return {
+        undoTriggered: false,
+        restoredState: null,
+        restoredTargetValue: null,
+        remainingUndoWindowMs: Math.max(0, snap.expiresAtMs - input.nowMs),
+      };
+    }
+
+    snap.undone = true;
+    return {
+      undoTriggered: true,
+      restoredState: snap.previousState,
+      restoredTargetValue: snap.previousTargetValue,
+      remainingUndoWindowMs: Math.max(0, snap.expiresAtMs - input.nowMs),
+    };
+  }
+}
+

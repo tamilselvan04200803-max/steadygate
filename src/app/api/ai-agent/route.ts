@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { verifyAdminRequestAuth } from "../admin-train/route";
 import {
   classifyHandGesture,
   extractHandParameters,
@@ -231,6 +232,14 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    const auth = verifyAdminRequestAuth(req);
+    if (!auth.authorized) {
+      return NextResponse.json(
+        { ok: false, success: false, error: auth.error },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const action = String(body.action || "auto_fix_frame");
     loadPersistedPatches();

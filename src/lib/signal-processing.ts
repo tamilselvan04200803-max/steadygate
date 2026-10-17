@@ -1087,3 +1087,101 @@ export class ShadowBaselineLearner {
   }
 }
 
+/**
+ * Wave 5 Stage 5 — Non-Diagnostic HL7 FHIR R4 Observation & DPDP Act 2023 Wellness Telemetry Export
+ * Formats hand-steadiness trends strictly as non-diagnostic assistive activity telemetry
+ * (`category = "activity"`, `raw_video_pixels_masked = true`).
+ */
+export function formatNonDiagnosticFhirObservation(input: {
+  subjectId?: string;
+  dominantFrequencyHz: number;
+  rmsAmplitudePalmUnits: number;
+  attenuationPct: number;
+  dyskinesiaModulationActive: boolean;
+  dpdpConsentGranted: boolean;
+  effectiveDateTime?: string;
+}) {
+  const isoNow = input.effectiveDateTime || new Date().toISOString();
+  return {
+    resourceType: "Observation" as const,
+    status: "final" as const,
+    category: [
+      {
+        coding: [
+          {
+            system: "http://terminology.hl7.org/CodeSystem/observation-category",
+            code: "activity",
+            display: "Activity & Assistive Steadiness Wellness Telemetry",
+          },
+        ],
+      },
+    ],
+    code: {
+      coding: [
+        {
+          system: "https://steadygate.local/fhir/CodeSystem/non-diagnostic-steadiness",
+          code: "hand-steadiness-assistive-summary",
+          display: "Non-Diagnostic Hand-Steadiness & Tremor-Adaptive Filter Summary",
+        },
+      ],
+      text: "Non-Diagnostic Assistive Hand-Steadiness Telemetry",
+    },
+    subject: {
+      reference: `Patient/${input.subjectId || "anonymous-local-user"}`,
+    },
+    effectiveDateTime: isoNow,
+    note: [
+      {
+        text: "Regulatory Notice (Invariant I8): General-wellness and assistive smart-home control telemetry only. Not a regulated medical device and not intended for clinical scoring or disease staging.",
+      },
+    ],
+    extension: [
+      {
+        url: "https://steadygate.local/fhir/StructureDefinition/privacy-dpdp-2023",
+        valueBoolean: input.dpdpConsentGranted,
+      },
+      {
+        url: "https://steadygate.local/fhir/StructureDefinition/raw-video-pixels-masked",
+        valueBoolean: true,
+      },
+    ],
+    privacyMetadata: {
+      raw_video_pixels_masked: true,
+      dpdp_act_2023_consent_granted: input.dpdpConsentGranted,
+      ephemeral_memory_only: !input.dpdpConsentGranted,
+    },
+    component: [
+      {
+        code: { text: "Dominant Oscillation Frequency (Hz)" },
+        valueQuantity: {
+          value: Math.round(input.dominantFrequencyHz * 100) / 100,
+          unit: "Hz",
+          system: "http://unitsofmeasure.org",
+          code: "Hz",
+        },
+      },
+      {
+        code: { text: "Normalized Oscillation RMS Amplitude (Palm Units)" },
+        valueQuantity: {
+          value: Math.round(input.rmsAmplitudePalmUnits * 10000) / 10000,
+          unit: "palm_units",
+        },
+      },
+      {
+        code: { text: "Stage-4 BMFLC-Kalman Tremor Attenuation (%)" },
+        valueQuantity: {
+          value: Math.round(input.attenuationPct * 10) / 10,
+          unit: "%",
+          system: "http://unitsofmeasure.org",
+          code: "%",
+        },
+      },
+      {
+        code: { text: "1-3 Hz Movement-Envelope Compensation Active" },
+        valueBoolean: input.dyskinesiaModulationActive,
+      },
+    ],
+  };
+}
+
+

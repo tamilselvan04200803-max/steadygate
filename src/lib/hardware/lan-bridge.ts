@@ -1,15 +1,107 @@
+import crypto from "crypto";
 import type {
   LanActuationResult,
   LanDriverType,
   SafetyRiskTier,
 } from "../../../.swarm/contracts/types";
 import { ActuatorCircuitBreaker } from "../policy/safety-chord-engine";
+import { STEADYGATE_V6_CONFIG } from "../../config/steadygate.config";
 
 /**
- * Subagent S10 — Local LAN Hardware Bridge (Matter 1.4 / Home Assistant / MQTT / Tasmota)
- * Executes 100% offline local LAN appliance actuation with an 800ms AbortController timeout,
- * Tier 3 Two-Step Safety Chord verification, and 3-strike Circuit Breaker protection.
+ * Subagent S10 & Wave 5 Stage 5 — Authenticated Local LAN Hardware Bridge
+ * Executes 100% offline local LAN appliance actuation with:
+ *  - HMAC-SHA256 request signing (X-SteadyGate-Signature, X-SteadyGate-Timestamp, X-SteadyGate-Nonce)
+ *  - +-5,000 ms replay window and nonce cache
+ *  - 800 ms AbortController timeout, Tier 3 Two-Step Safety Chord verification, and 3-strike Circuit Breaker
  */
+
+const DEFAULT_LAN_HMAC_SECRET =
+  process.env.STEADYGATE_LAN_HMAC_SECRET || "steadygate-v6-local-lan-hmac-key";
+const usedNonces = new Map<string, number>();
+
+export function computeLanBridgeHmacSignature(
+  payloadJson: string,
+  timestampMs: number | string,
+  nonce: string,
+  secretKey: string = DEFAULT_LAN_HMAC_SECRET
+): string {
+  const canonical = `${timestampMs}.${nonce}.${payloadJson}`;
+  return crypto.createHmac("sha256", secretKey).update(canonical).digest("hex");
+}
+
+export function buildSignedLanBridgeHeaders(
+  payloadJson: string,
+  options?: {
+    timestampMs?: number;
+    nonce?: string;
+    secretKey?: string;
+  }
+): Record<string, string> {
+  const ts = options?.timestampMs ?? Date.now();
+  const nonce =
+    options?.nonce ?? `${ts.toString(36)}_${crypto.randomBytes(8).toString("hex")}`;
+  const sig = computeLanBridgeHmacSignature(payloadJson, ts, nonce, options?.secretKey);
+  return {
+    "Content-Type": "application/json",
+    "X-SteadyGate-Timestamp": String(ts),
+    "X-SteadyGate-Nonce": nonce,
+    "X-SteadyGate-Signature": sig,
+  };
+}
+
+export function verifyLanBridgeHmacRequest(input: {
+  payloadJson: string;
+  signatureHeader?: string | null;
+  timestampHeader?: string | null;
+  nonceHeader?: string | null;
+  nowMs?: number;
+  secretKey?: string;
+}): {
+  valid: boolean;
+  status: 200 | 401;
+  reason: string;
+} {
+  const nowMs = input.nowMs ?? Date.now();
+  const maxSkewMs = STEADYGATE_V6_CONFIG.stage5Actuation.hmacReplayWindowMs.value;
+
+  if (!input.signatureHeader || !input.timestampHeader || !input.nonceHeader) {
+    return { valid: false, status: 401, reason: "MISSING_HMAC_HEADERS" };
+  }
+
+  const tsNum = Number(input.timestampHeader);
+  if (!Number.isFinite(tsNum) || Math.abs(nowMs - tsNum) > maxSkewMs) {
+    return { valid: false, status: 401, reason: "HMAC_TIMESTAMP_OUT_OF_WINDOW" };
+  }
+
+  // Prune expired nonces and reject replayed nonces
+  for (const [n, seenAt] of usedNonces.entries()) {
+    if (nowMs - seenAt > maxSkewMs * 2) {
+      usedNonces.delete(n);
+    }
+  }
+  if (usedNonces.has(input.nonceHeader)) {
+    return { valid: false, status: 401, reason: "HMAC_NONCE_REPLAY_DETECTED" };
+  }
+
+  const expected = computeLanBridgeHmacSignature(
+    input.payloadJson,
+    tsNum,
+    input.nonceHeader,
+    input.secretKey
+  );
+  const sigBuf = Buffer.from(input.signatureHeader, "utf8");
+  const expBuf = Buffer.from(expected, "utf8");
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return { valid: false, status: 401, reason: "HMAC_SIGNATURE_MISMATCH" };
+  }
+
+  usedNonces.set(input.nonceHeader, nowMs);
+  return { valid: true, status: 200, reason: "HMAC_VERIFIED" };
+}
+
+export function clearLanBridgeNonceCache(): void {
+  usedNonces.clear();
+}
 
 export const globalActuatorCircuitBreaker = new ActuatorCircuitBreaker(3);
 
@@ -92,15 +184,16 @@ export async function dispatchLanActuation(
       Math.min(800, safetyProof.timeoutMs ?? 800)
     );
     try {
+      const payloadBody = JSON.stringify({
+        deviceId: device.id,
+        command,
+        mqttTopic: device.mqttTopic,
+        espPin: device.espPin,
+      });
       const res = await fetch(device.lanEndpointUrl, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          deviceId: device.id,
-          command,
-          mqttTopic: device.mqttTopic,
-          espPin: device.espPin,
-        }),
+        headers: buildSignedLanBridgeHeaders(payloadBody),
+        body: payloadBody,
         signal: controller.signal,
       });
       clearTimeout(timeoutId);

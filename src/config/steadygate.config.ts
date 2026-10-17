@@ -654,18 +654,18 @@ export const STEADYGATE_V6_CONFIG: SteadyGateV6Config = {
       description: "Cancellable post-actuation rollback window duration in milliseconds",
     },
     watchdogTimeoutMs: {
-      value: 2000,
+      value: 600,
       unit: "ms",
       provenance: "heuristic",
       normalization: "seconds_or_ms",
-      description: "Hardware relay heartbeat timeout before automatic safe de-energization",
+      description: "Dead-man watchdog tracking-loss timeout before aborting pending actuation",
     },
     hmacReplayWindowMs: {
-      value: 30000,
+      value: 5000,
       unit: "ms",
       provenance: "heuristic",
       normalization: "seconds_or_ms",
-      description: "Maximum timestamp skew for HMAC-SHA256 signed LAN bridge requests",
+      description: "Maximum timestamp skew (+-5,000 ms) for HMAC-SHA256 signed LAN bridge requests",
     },
     thermalAutoShutoffMinutes: {
       value: 30,

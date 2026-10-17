@@ -236,6 +236,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
   });
   const sceneRef = useRef(new SceneAnalyzer());
   const smootherRef = useRef(new LandmarkSmoother());
+  const ghostLandmarksRef = useRef<HandLandmark2D[] | null>(null);
   const voterRef = useRef(new GestureVoter(9, 0.6, 0.35));
   const timeVoterRef = useRef(new TimeWeightedGestureVoter(350, 0.6, 0.35));
   const intentionalityEngineRef = useRef(new IntentionalityEnsembleEngine());
@@ -959,9 +960,26 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       if (webcam) sendTelemetry();
     }
 
-    // ---------------- draw skeleton & bounding box ----------------
+    // ---------------- draw Dual-Skeleton Stabilized Ghost-Hand HUD & bounding box ----------------
     if (normLandmarks) {
-      const px = normLandmarks.map((p) => ({
+      const prevGhost = ghostLandmarksRef.current;
+      const stabilizedGhost = normLandmarks.map((pt, idx) => {
+        const prev = prevGhost?.[idx];
+        if (!prev) return { ...pt };
+        const alpha = 0.24; // Stage-4 visual ghost-hand stabilization envelope
+        return {
+          x: prev.x + alpha * (pt.x - prev.x),
+          y: prev.y + alpha * (pt.y - prev.y),
+          z: (prev.z ?? 0) + alpha * ((pt.z ?? 0) - (prev.z ?? 0)),
+        };
+      });
+      ghostLandmarksRef.current = stabilizedGhost;
+
+      const rawPx = normLandmarks.map((p) => ({
+        x: (mirrored ? 1 - p.x : p.x) * width,
+        y: p.y * height,
+      }));
+      const px = stabilizedGhost.map((p) => ({
         x: (mirrored ? 1 - p.x : p.x) * width,
         y: p.y * height,
       }));
@@ -983,8 +1001,19 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
       ctx.lineWidth = 2.5;
       ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
 
+      // 1. Raw trembling landmarks (translucent amber overlay)
+      ctx.strokeStyle = "rgba(251, 191, 36, 0.32)";
+      ctx.lineWidth = 2;
+      for (const [a, b] of HAND_BONES) {
+        ctx.beginPath();
+        ctx.moveTo(rawPx[a].x, rawPx[a].y);
+        ctx.lineTo(rawPx[b].x, rawPx[b].y);
+        ctx.stroke();
+      }
+
+      // 2. Stage-4 Stabilized Ghost-Hand skeleton (crisp emerald/cyan overlay)
       const color =
-        committed === "UNKNOWN" ? "rgba(148,163,184,0.8)" : "rgba(6,182,212,0.95)";
+        committed === "UNKNOWN" ? "rgba(148,163,184,0.8)" : "rgba(16,185,129,0.95)";
       ctx.strokeStyle = color;
       ctx.lineWidth = 4;
       for (const [a, b] of HAND_BONES) {
@@ -997,7 +1026,7 @@ export const LiveCameraStream: React.FC<LiveCameraStreamProps> = ({
         const tip = [4, 8, 12, 16, 20].includes(idx);
         ctx.beginPath();
         ctx.arc(pt.x, pt.y, idx === 0 ? 8 : tip ? 6.5 : 4.5, 0, Math.PI * 2);
-        ctx.fillStyle = idx === 0 ? "#ec4899" : tip ? "#a855f7" : "#06b6d4";
+        ctx.fillStyle = idx === 0 ? "#ec4899" : tip ? "#10b981" : "#06b6d4";
         ctx.fill();
       });
 

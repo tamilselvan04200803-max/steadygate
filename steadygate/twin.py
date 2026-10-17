@@ -17,10 +17,14 @@ Turn OFF controls, physical fault injection modules (`delay_ack` / `latency_spik
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
+import os
+import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -28,6 +32,51 @@ from steadygate.actuator import COMMAND_TO_STATE, VirtualActuator
 from steadygate.config import load_config
 from steadygate.events import ActionCommand, Observation
 from steadygate.policy import SteadyGatePolicy
+
+DEFAULT_LAN_HMAC_SECRET = os.environ.get(
+    "STEADYGATE_LAN_HMAC_SECRET", "steadygate-v6-local-lan-hmac-key"
+)
+_USED_NONCES: dict[str, float] = {}
+
+
+def verify_lan_bridge_hmac(
+    payload_raw: str,
+    signature_header: str | None,
+    timestamp_header: str | None,
+    nonce_header: str | None,
+    secret_key: str = DEFAULT_LAN_HMAC_SECRET,
+    now_ms: float | None = None,
+    max_skew_ms: float = 5000.0,
+) -> tuple[bool, str]:
+    """Verifies HMAC-SHA256 signature, +-5000ms timestamp window, and nonce uniqueness."""
+    if not signature_header or not timestamp_header or not nonce_header:
+        return False, "MISSING_HMAC_HEADERS"
+    try:
+        ts_num = float(timestamp_header)
+    except ValueError:
+        return False, "INVALID_HMAC_TIMESTAMP"
+
+    current_ms = now_ms if now_ms is not None else (time.time() * 1000.0)
+    if abs(current_ms - ts_num) > max_skew_ms:
+        return False, "HMAC_TIMESTAMP_OUT_OF_WINDOW"
+
+    # Prune expired nonces
+    expired = [n for n, t in _USED_NONCES.items() if current_ms - t > max_skew_ms * 2.0]
+    for n in expired:
+        _USED_NONCES.pop(n, None)
+
+    if nonce_header in _USED_NONCES:
+        return False, "HMAC_NONCE_REPLAY_DETECTED"
+
+    canonical = f"{int(ts_num)}.{nonce_header}.{payload_raw}"
+    expected = hmac.new(
+        secret_key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if not hmac.compare_digest(signature_header, expected):
+        return False, "HMAC_SIGNATURE_MISMATCH"
+
+    _USED_NONCES[nonce_header] = current_ms
+    return True, "HMAC_VERIFIED"
 
 LOCAL_DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -342,7 +391,19 @@ def create_twin_app(config: dict[str, Any] | None = None) -> FastAPI:
         }
 
     @app.post("/api/actuate")
-    async def post_actuate(payload: ActuatePayload) -> dict[str, Any]:
+    async def post_actuate(payload: ActuatePayload, request: Request) -> dict[str, Any]:
+        sig_hdr = request.headers.get("X-SteadyGate-Signature")
+        ts_hdr = request.headers.get("X-SteadyGate-Timestamp")
+        nonce_hdr = request.headers.get("X-SteadyGate-Nonce")
+        require_hmac = os.environ.get("STEADYGATE_REQUIRE_HMAC") == "1"
+        if sig_hdr or ts_hdr or nonce_hdr or require_hmac:
+            raw_body = (await request.body()).decode("utf-8")
+            valid, reason = verify_lan_bridge_hmac(
+                raw_body, sig_hdr, ts_hdr, nonce_hdr
+            )
+            if not valid:
+                raise HTTPException(status_code=401, detail=reason)
+
         dev = runtime.actuator.get_device(payload.device_id)
         target_state = COMMAND_TO_STATE.get(payload.command, "ON")
         action = ActionCommand(

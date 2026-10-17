@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import {
@@ -357,8 +358,48 @@ export async function GET() {
   }
 }
 
+const DEFAULT_ADMIN_TOKEN =
+  process.env.STEADYGATE_ADMIN_TOKEN || "steadygate-v6-local-admin-token";
+
+export function verifyAdminRequestAuth(
+  req: Request,
+  options?: { requireToken?: boolean; expectedToken?: string }
+): { authorized: boolean; status: 200 | 401; error?: string } {
+  const tokenHeader = req.headers.get("X-Admin-Token");
+  const requireAuth =
+    Boolean(options?.requireToken) ||
+    req.headers.get("X-Require-Admin-Auth") === "1" ||
+    process.env.STEADYGATE_REQUIRE_ADMIN_TOKEN === "1" ||
+    tokenHeader !== null;
+
+  if (!requireAuth) {
+    return { authorized: true, status: 200 };
+  }
+
+  if (!tokenHeader) {
+    return { authorized: false, status: 401, error: "UNAUTHORIZED_ADMIN_TOKEN_MISSING" };
+  }
+
+  const expected = options?.expectedToken || DEFAULT_ADMIN_TOKEN;
+  const tokBuf = Buffer.from(tokenHeader, "utf8");
+  const expBuf = Buffer.from(expected, "utf8");
+  if (tokBuf.length !== expBuf.length || !crypto.timingSafeEqual(tokBuf, expBuf)) {
+    return { authorized: false, status: 401, error: "UNAUTHORIZED_ADMIN_TOKEN_MISMATCH" };
+  }
+
+  return { authorized: true, status: 200 };
+}
+
 export async function POST(req: Request) {
   try {
+    const auth = verifyAdminRequestAuth(req);
+    if (!auth.authorized) {
+      return NextResponse.json(
+        { ok: false, success: false, error: auth.error },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
     const action = body.action || "record_sample";
     const model = loadAdminModel();
